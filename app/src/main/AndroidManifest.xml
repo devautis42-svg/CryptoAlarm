@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:allowBackup="true"
@@ -40,7 +41,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-initiated continuous cryptocurrency market monitoring with urgent price-drop alerts" />
+                android:value="User-initiated continuous cryptocurrency market monitoring with urgent live price alerts" />
         </service>
     </application>
 </manifest>
