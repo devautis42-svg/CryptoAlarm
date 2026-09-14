@@ -36,8 +36,10 @@ fun ComponentActivity.CryptoAlarmApp() {
     MaterialTheme(colorScheme = darkColorScheme()) {
         var rules by remember { mutableStateOf(RuleStore.load(this)) }
         var monitoring by remember { mutableStateOf(RuleStore.isMonitoring(this)) }
+        var scanSeconds by remember { mutableStateOf(RuleStore.getScanIntervalSeconds(this).toString()) }
         var symbol by remember { mutableStateOf("BTCUSDT") }
-        var drop by remember { mutableStateOf("0.5") }
+        var direction by remember { mutableStateOf(AlertDirection.DROP) }
+        var percent by remember { mutableStateOf("0.5") }
         var minutes by remember { mutableStateOf("5") }
 
         val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -57,11 +59,40 @@ fun ComponentActivity.CryptoAlarmApp() {
                     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(if (monitoring) "🟢 Мониторинг включён" else "⚫ Мониторинг выключен", style = MaterialTheme.typography.titleMedium)
-                            Text("Проверка рынка каждые 15 секунд. После перезагрузки мониторинг восстановится автоматически, если был включён.", style = MaterialTheme.typography.bodySmall)
+                            Text("Частоту сканирования можно настроить от 1 секунды. После перезагрузки мониторинг восстановится автоматически, если был включён.", style = MaterialTheme.typography.bodySmall)
+
+                            OutlinedTextField(
+                                value = scanSeconds,
+                                onValueChange = { scanSeconds = it.filter(Char::isDigit).take(5) },
+                                label = { Text("Сканировать каждые, секунд") },
+                                supportingText = { Text("Минимум 1 секунда") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = {
+                                    val value = ((scanSeconds.toIntOrNull() ?: 1) - 1).coerceAtLeast(1)
+                                    scanSeconds = value.toString()
+                                    RuleStore.setScanIntervalSeconds(this@CryptoAlarmApp, value)
+                                }) { Text("−1 сек") }
+                                OutlinedButton(onClick = {
+                                    val value = ((scanSeconds.toIntOrNull() ?: 1) + 1).coerceAtMost(99999)
+                                    scanSeconds = value.toString()
+                                    RuleStore.setScanIntervalSeconds(this@CryptoAlarmApp, value)
+                                }) { Text("+1 сек") }
+                                Button(onClick = {
+                                    val value = (scanSeconds.toIntOrNull() ?: 1).coerceAtLeast(1)
+                                    scanSeconds = value.toString()
+                                    RuleStore.setScanIntervalSeconds(this@CryptoAlarmApp, value)
+                                }) { Text("Сохранить") }
+                            }
+
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(
                                     enabled = rules.any { it.enabled } && !monitoring,
                                     onClick = {
+                                        val value = (scanSeconds.toIntOrNull() ?: 1).coerceAtLeast(1)
+                                        RuleStore.setScanIntervalSeconds(this@CryptoAlarmApp, value)
                                         val intent = Intent(this@CryptoAlarmApp, MarketMonitorService::class.java).setAction(MarketMonitorService.ACTION_START)
                                         ContextCompat.startForegroundService(this@CryptoAlarmApp, intent)
                                         monitoring = true
@@ -102,12 +133,25 @@ fun ComponentActivity.CryptoAlarmApp() {
                 }
 
                 item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = direction == AlertDirection.DROP,
+                            onClick = { direction = AlertDirection.DROP },
+                            label = { Text("📉 Падение") }
+                        )
+                        FilterChip(
+                            selected = direction == AlertDirection.RISE,
+                            onClick = { direction = AlertDirection.RISE },
+                            label = { Text("📈 Рост") }
+                        )
+                    }
+                }
+
+                item {
                     OutlinedTextField(
-                        value = drop,
-                        onValueChange = { value ->
-                            drop = value.filter { it.isDigit() || it == '.' || it == ',' }.replace(',', '.')
-                        },
-                        label = { Text("Падение, %") },
+                        value = percent,
+                        onValueChange = { value -> percent = value.filter { it.isDigit() || it == '.' || it == ',' }.replace(',', '.') },
+                        label = { Text("Изменение, %") },
                         supportingText = { Text("От 0.1% до 99.9%. Например: 0.1, 0.5, 1.7") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
@@ -117,12 +161,12 @@ fun ComponentActivity.CryptoAlarmApp() {
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedButton(onClick = {
-                            val value = ((drop.toDoubleOrNull() ?: 0.1) - 0.1).coerceAtLeast(0.1)
-                            drop = String.format(java.util.Locale.US, "%.1f", value)
+                            val value = ((percent.toDoubleOrNull() ?: 0.1) - 0.1).coerceAtLeast(0.1)
+                            percent = String.format(java.util.Locale.US, "%.1f", value)
                         }) { Text("−0.1") }
                         OutlinedButton(onClick = {
-                            val value = ((drop.toDoubleOrNull() ?: 0.1) + 0.1).coerceAtMost(99.9)
-                            drop = String.format(java.util.Locale.US, "%.1f", value)
+                            val value = ((percent.toDoubleOrNull() ?: 0.1) + 0.1).coerceAtMost(99.9)
+                            percent = String.format(java.util.Locale.US, "%.1f", value)
                         }) { Text("+0.1") }
                     }
                 }
@@ -156,10 +200,10 @@ fun ComponentActivity.CryptoAlarmApp() {
                         modifier = Modifier.fillMaxWidth().height(52.dp),
                         shape = RoundedCornerShape(14.dp),
                         onClick = {
-                            val pct = drop.toDoubleOrNull()
+                            val pct = percent.toDoubleOrNull()
                             val mins = minutes.toIntOrNull()
                             if (pct != null && pct in 0.1..99.9 && mins != null && mins in 1..999) {
-                                rules = rules + AlarmRule(symbol = symbol, dropPercent = pct, windowMinutes = mins)
+                                rules = rules + AlarmRule(symbol = symbol, thresholdPercent = pct, windowMinutes = mins, direction = direction)
                                 RuleStore.save(this@CryptoAlarmApp, rules)
                             }
                         }
@@ -175,7 +219,9 @@ fun ComponentActivity.CryptoAlarmApp() {
                         Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(rule.symbol.removeSuffix("USDT"), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                                Text("Падение ≥ ${rule.dropPercent}% за ${rule.windowMinutes} мин")
+                                val label = if (rule.direction == AlertDirection.DROP) "Падение" else "Рост"
+                                val icon = if (rule.direction == AlertDirection.DROP) "📉" else "📈"
+                                Text("$icon $label ≥ ${rule.thresholdPercent}% за ${rule.windowMinutes} мин")
                             }
                             Switch(
                                 checked = rule.enabled,
@@ -193,7 +239,7 @@ fun ComponentActivity.CryptoAlarmApp() {
                 }
 
                 item {
-                    Text("Приложение только читает публичные цены Binance и не имеет доступа к твоим средствам или торговому аккаунту.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Важно: сканирование каждую 1 секунду сильнее расходует батарею и чаще обращается к публичному API Binance. Для обычного использования разумнее 3–10 секунд.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
