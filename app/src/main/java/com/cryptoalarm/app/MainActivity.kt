@@ -3,8 +3,10 @@ package com.cryptoalarm.app
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -31,14 +33,12 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ComponentActivity.CryptoAlarmApp() {
-    val dark = darkColorScheme()
-    MaterialTheme(colorScheme = dark) {
+    MaterialTheme(colorScheme = darkColorScheme()) {
         var rules by remember { mutableStateOf(RuleStore.load(this)) }
         var monitoring by remember { mutableStateOf(RuleStore.isMonitoring(this)) }
         var symbol by remember { mutableStateOf("BTCUSDT") }
-        var drop by remember { mutableStateOf("3") }
-        var minutes by remember { mutableIntStateOf(15) }
-        var menuOpen by remember { mutableStateOf(false) }
+        var drop by remember { mutableStateOf("0.5") }
+        var minutes by remember { mutableStateOf("5") }
 
         val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
         LaunchedEffect(Unit) {
@@ -47,9 +47,7 @@ fun ComponentActivity.CryptoAlarmApp() {
             }
         }
 
-        Scaffold(
-            topBar = { TopAppBar(title = { Text("Crypto Alarm", fontWeight = FontWeight.Bold) }) }
-        ) { pad ->
+        Scaffold(topBar = { TopAppBar(title = { Text("Crypto Alarm", fontWeight = FontWeight.Bold) }) }) { pad ->
             LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(pad).padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -59,7 +57,7 @@ fun ComponentActivity.CryptoAlarmApp() {
                     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(if (monitoring) "🟢 Мониторинг включён" else "⚫ Мониторинг выключен", style = MaterialTheme.typography.titleMedium)
-                            Text("Проверка рынка каждые 15 секунд. API-ключ Binance не нужен.", style = MaterialTheme.typography.bodySmall)
+                            Text("Проверка рынка каждые 15 секунд. После перезагрузки мониторинг восстановится автоматически, если был включён.", style = MaterialTheme.typography.bodySmall)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(
                                     enabled = rules.any { it.enabled } && !monitoring,
@@ -76,10 +74,19 @@ fun ComponentActivity.CryptoAlarmApp() {
                                         monitoring = false
                                     }
                                 ) { Text("Выключить") }
-                                OutlinedButton(
-                                    onClick = { startService(Intent(this@CryptoAlarmApp, MarketMonitorService::class.java).setAction(MarketMonitorService.ACTION_SILENCE)) }
-                                ) { Text("Тишина") }
+                                OutlinedButton(onClick = {
+                                    startService(Intent(this@CryptoAlarmApp, MarketMonitorService::class.java).setAction(MarketMonitorService.ACTION_SILENCE))
+                                }) { Text("Тишина") }
                             }
+                            OutlinedButton(onClick = {
+                                runCatching {
+                                    startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                        data = Uri.parse("package:$packageName")
+                                    })
+                                }.onFailure {
+                                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                }
+                            }) { Text("Не ограничивать батареей") }
                         }
                     }
                 }
@@ -89,11 +96,7 @@ fun ComponentActivity.CryptoAlarmApp() {
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf("BTCUSDT", "ETHUSDT", "SOLUSDT").forEach { s ->
-                            FilterChip(
-                                selected = symbol == s,
-                                onClick = { symbol = s },
-                                label = { Text(s.removeSuffix("USDT")) }
-                            )
+                            FilterChip(selected = symbol == s, onClick = { symbol = s }, label = { Text(s.removeSuffix("USDT")) })
                         }
                     }
                 }
@@ -101,29 +104,50 @@ fun ComponentActivity.CryptoAlarmApp() {
                 item {
                     OutlinedTextField(
                         value = drop,
-                        onValueChange = { drop = it.filter { c -> c.isDigit() || c == '.' || c == ',' }.replace(',', '.') },
+                        onValueChange = { value ->
+                            drop = value.filter { it.isDigit() || it == '.' || it == ',' }.replace(',', '.')
+                        },
                         label = { Text("Падение, %") },
-                        supportingText = { Text("Например: 3 = тревога при падении на 3% или больше") },
+                        supportingText = { Text("От 0.1% до 99.9%. Например: 0.1, 0.5, 1.7") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
                 }
 
                 item {
-                    ExposedDropdownMenuBox(expanded = menuOpen, onExpandedChange = { menuOpen = !menuOpen }) {
-                        OutlinedTextField(
-                            modifier = Modifier.menuAnchor().fillMaxWidth(),
-                            value = "$minutes минут",
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("За какой период") },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuOpen) }
-                        )
-                        ExposedDropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            listOf(5, 15, 30, 60).forEach { m ->
-                                DropdownMenuItem(text = { Text("$m минут") }, onClick = { minutes = m; menuOpen = false })
-                            }
-                        }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = {
+                            val value = ((drop.toDoubleOrNull() ?: 0.1) - 0.1).coerceAtLeast(0.1)
+                            drop = String.format(java.util.Locale.US, "%.1f", value)
+                        }) { Text("−0.1") }
+                        OutlinedButton(onClick = {
+                            val value = ((drop.toDoubleOrNull() ?: 0.1) + 0.1).coerceAtMost(99.9)
+                            drop = String.format(java.util.Locale.US, "%.1f", value)
+                        }) { Text("+0.1") }
+                    }
+                }
+
+                item {
+                    OutlinedTextField(
+                        value = minutes,
+                        onValueChange = { minutes = it.filter(Char::isDigit).take(3) },
+                        label = { Text("Период, минут") },
+                        supportingText = { Text("Любое значение от 1 до 999 минут") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            val value = ((minutes.toIntOrNull() ?: 1) - 1).coerceAtLeast(1)
+                            minutes = value.toString()
+                        }) { Text("−1 мин") }
+                        OutlinedButton(onClick = {
+                            val value = ((minutes.toIntOrNull() ?: 1) + 1).coerceAtMost(999)
+                            minutes = value.toString()
+                        }) { Text("+1 мин") }
                     }
                 }
 
@@ -133,8 +157,9 @@ fun ComponentActivity.CryptoAlarmApp() {
                         shape = RoundedCornerShape(14.dp),
                         onClick = {
                             val pct = drop.toDoubleOrNull()
-                            if (pct != null && pct > 0) {
-                                rules = rules + AlarmRule(symbol = symbol, dropPercent = pct, windowMinutes = minutes)
+                            val mins = minutes.toIntOrNull()
+                            if (pct != null && pct in 0.1..99.9 && mins != null && mins in 1..999) {
+                                rules = rules + AlarmRule(symbol = symbol, dropPercent = pct, windowMinutes = mins)
                                 RuleStore.save(this@CryptoAlarmApp, rules)
                             }
                         }
@@ -143,16 +168,11 @@ fun ComponentActivity.CryptoAlarmApp() {
 
                 item { HorizontalDivider(); Text("Мои будильники", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) }
 
-                if (rules.isEmpty()) {
-                    item { Text("Пока нет правил. Добавь первое выше.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                }
+                if (rules.isEmpty()) item { Text("Пока нет правил. Добавь первое выше.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
 
                 items(rules, key = { it.id }) { rule ->
                     ElevatedCard {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(rule.symbol.removeSuffix("USDT"), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                                 Text("Падение ≥ ${rule.dropPercent}% за ${rule.windowMinutes} мин")
@@ -173,11 +193,7 @@ fun ComponentActivity.CryptoAlarmApp() {
                 }
 
                 item {
-                    Text(
-                        "Важно: приложение не торгует и не подключается к биржевому аккаунту. Оно только читает публичные цены и подаёт сигнал.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text("Приложение только читает публичные цены Binance и не имеет доступа к твоим средствам или торговому аккаунту.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
