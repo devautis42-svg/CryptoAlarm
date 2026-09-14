@@ -4,9 +4,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-enum class AlertDirection {
-    DROP,
-    RISE
+enum class AlertDirection { DROP, RISE }
+
+enum class MarketType(val label: String) {
+    SPOT("Spot"),
+    FUTURES("Futures")
 }
 
 data class AlarmRule(
@@ -15,6 +17,7 @@ data class AlarmRule(
     val thresholdPercent: Double,
     val windowMinutes: Int,
     val direction: AlertDirection = AlertDirection.DROP,
+    val marketType: MarketType = MarketType.SPOT,
     val enabled: Boolean = true
 )
 
@@ -43,6 +46,9 @@ object RuleStore {
                     direction = runCatching {
                         AlertDirection.valueOf(o.optString("direction", AlertDirection.DROP.name))
                     }.getOrDefault(AlertDirection.DROP),
+                    marketType = runCatching {
+                        MarketType.valueOf(o.optString("marketType", MarketType.SPOT.name))
+                    }.getOrDefault(MarketType.SPOT),
                     enabled = o.optBoolean("enabled", true)
                 )
             }
@@ -58,6 +64,7 @@ object RuleStore {
                 put("thresholdPercent", r.thresholdPercent)
                 put("windowMinutes", r.windowMinutes)
                 put("direction", r.direction.name)
+                put("marketType", r.marketType.name)
                 put("enabled", r.enabled)
             })
         }
