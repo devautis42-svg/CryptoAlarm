@@ -84,7 +84,7 @@ class MarketMonitorService : Service() {
     private fun fetchMinuteCloses(symbol: String, limit: Int): List<Double>? {
         val safeLimit = limit.coerceIn(2, 1000)
         val url = "https://api.binance.com/api/v3/klines?symbol=$symbol&interval=1m&limit=$safeLimit"
-        val req = Request.Builder().url(url).header("User-Agent", "CryptoAlarm/0.1").build()
+        val req = Request.Builder().url(url).header("User-Agent", "CryptoAlarm/0.2").build()
         return runCatching {
             client.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) return null
@@ -212,7 +212,6 @@ class MarketMonitorService : Service() {
         loopJob?.cancel()
         silenceAlarm()
         scope.cancel()
-        RuleStore.setMonitoring(this, false)
         super.onDestroy()
     }
 
