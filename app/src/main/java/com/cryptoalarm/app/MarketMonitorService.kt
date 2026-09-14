@@ -51,32 +51,47 @@ class MarketMonitorService : Service() {
         startForeground(NOTIFICATION_MONITOR, monitorNotification("Рынок отслеживается"))
         RuleStore.setMonitoring(this, true)
         if (loopJob?.isActive == true) return
+
         loopJob = scope.launch {
             while (isActive) {
                 val rules = RuleStore.load(this@MarketMonitorService).filter { it.enabled }
+                val scanSeconds = RuleStore.getScanIntervalSeconds(this@MarketMonitorService)
+
                 if (rules.isEmpty()) {
-                    updateMonitor("Нет активных правил")
+                    updateMonitor("Нет активных правил • скан: ${scanSeconds}с")
                 } else {
                     rules.groupBy { it.symbol }.forEach { (symbol, symbolRules) ->
                         val maxWindow = symbolRules.maxOf { it.windowMinutes }
-                        val closes = fetchMinuteCloses(symbol, maxWindow + 1)
+                        val closes = fetchMinuteCloses(symbol, maxWindow + 2)
                         if (closes != null && closes.size >= 2) {
                             val current = closes.last()
                             symbolRules.forEach { rule ->
                                 val idx = (closes.size - 1 - rule.windowMinutes).coerceAtLeast(0)
                                 val old = closes[idx]
+                                if (old <= 0.0) return@forEach
                                 val change = ((current - old) / old) * 100.0
-                                if (change <= -rule.dropPercent) {
+
+                                val triggered = when (rule.direction) {
+                                    AlertDirection.DROP -> change <= -rule.thresholdPercent
+                                    AlertDirection.RISE -> change >= rule.thresholdPercent
+                                }
+                                val reset = when (rule.direction) {
+                                    AlertDirection.DROP -> change > -(rule.thresholdPercent * 0.75)
+                                    AlertDirection.RISE -> change < rule.thresholdPercent * 0.75
+                                }
+
+                                if (triggered) {
                                     if (latched.add(rule.id)) triggerAlarm(rule, current, change)
-                                } else if (change > -(rule.dropPercent * 0.75)) {
+                                } else if (reset) {
                                     latched.remove(rule.id)
                                 }
                             }
-                            updateMonitor("${symbol.removeSuffix("USDT")}: ${formatPrice(current)} • активных правил: ${rules.size}")
+                            updateMonitor("${symbol.removeSuffix("USDT")}: ${formatPrice(current)} • скан: ${scanSeconds}с • правил: ${rules.size}")
                         }
                     }
                 }
-                delay(15_000)
+
+                delay(scanSeconds.coerceAtLeast(1) * 1000L)
             }
         }
     }
@@ -84,7 +99,7 @@ class MarketMonitorService : Service() {
     private fun fetchMinuteCloses(symbol: String, limit: Int): List<Double>? {
         val safeLimit = limit.coerceIn(2, 1000)
         val url = "https://api.binance.com/api/v3/klines?symbol=$symbol&interval=1m&limit=$safeLimit"
-        val req = Request.Builder().url(url).header("User-Agent", "CryptoAlarm/0.2").build()
+        val req = Request.Builder().url(url).header("User-Agent", "CryptoAlarm/0.3").build()
         return runCatching {
             client.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) return null
@@ -98,8 +113,11 @@ class MarketMonitorService : Service() {
     private fun triggerAlarm(rule: AlarmRule, price: Double, change: Double) {
         startAlarmSound()
         val coin = rule.symbol.removeSuffix("USDT")
-        val title = "⚠ $coin падает!"
-        val text = String.format("%.2f%% за %d мин • цена %s", change, rule.windowMinutes, formatPrice(price))
+        val rising = rule.direction == AlertDirection.RISE
+        val title = if (rising) "📈 $coin растёт!" else "📉 $coin падает!"
+        val text = String.format("%+.2f%% за %d мин • цена %s", change, rule.windowMinutes, formatPrice(price))
+        val thresholdText = if (rising) "+${rule.thresholdPercent}%" else "-${rule.thresholdPercent}%"
+
         val silenceIntent = PendingIntent.getService(
             this, 2,
             Intent(this, MarketMonitorService::class.java).setAction(ACTION_SILENCE),
@@ -114,7 +132,7 @@ class MarketMonitorService : Service() {
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(title)
             .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText("$text\nПорог: -${rule.dropPercent}%"))
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$text\nПорог: $thresholdText"))
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setAutoCancel(false)
@@ -166,8 +184,8 @@ class MarketMonitorService : Service() {
             }
         )
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ALARM, "Тревоги падения цены", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Срочные уведомления о падении криптовалют"
+            NotificationChannel(CHANNEL_ALARM, "Тревоги движения цены", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Срочные уведомления о росте или падении криптовалют"
                 enableVibration(true)
                 setSound(null, null)
             }
