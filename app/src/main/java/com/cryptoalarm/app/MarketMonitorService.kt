@@ -15,7 +15,6 @@ import org.json.JSONObject
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 class MarketMonitorService : Service() {
@@ -39,17 +38,18 @@ class MarketMonitorService : Service() {
 
     private var configJob: Job? = null
     private var fallbackJob: Job? = null
-    private var socket: WebSocket? = null
-    private var socketGeneration = 0
-    private val reconnectScheduled = AtomicBoolean(false)
+    private val sockets = ConcurrentHashMap<MarketType, WebSocket>()
+    private val generations = ConcurrentHashMap<MarketType, Int>()
+    private val connectedMarkets = ConcurrentHashMap.newKeySet<MarketType>()
+    private val reconnectPending = ConcurrentHashMap.newKeySet<MarketType>()
     private val lastStatusUpdate = AtomicLong(0L)
     private val history = ConcurrentHashMap<String, ArrayDeque<PricePoint>>()
-    private val maxWindowBySymbol = ConcurrentHashMap<String, Int>()
+    private val maxWindowByKey = ConcurrentHashMap<String, Int>()
     private val latched = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile private var activeRules: List<AlarmRule> = emptyList()
-    @Volatile private var activeSymbols: Set<String> = emptySet()
-    @Volatile private var webSocketConnected = false
+    @Volatile private var spotSymbols: Set<String> = emptySet()
+    @Volatile private var futuresSymbols: Set<String> = emptySet()
 
     private var player: MediaPlayer? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -79,7 +79,7 @@ class MarketMonitorService : Service() {
 
         configJob = scope.launch {
             while (isActive) {
-                refreshRulesAndConnection()
+                refreshRulesAndConnections()
                 delay(1_000)
             }
         }
@@ -88,120 +88,135 @@ class MarketMonitorService : Service() {
             while (isActive) {
                 val fallbackSeconds = RuleStore.getScanIntervalSeconds(this@MarketMonitorService).coerceAtLeast(1)
                 delay(fallbackSeconds * 1000L)
-                if (!webSocketConnected && activeRules.isNotEmpty()) {
-                    pollRestFallback()
-                }
+                pollRestFallback()
             }
         }
     }
 
-    private suspend fun refreshRulesAndConnection() {
+    private suspend fun refreshRulesAndConnections() {
         val rules = RuleStore.load(this).filter { it.enabled }
-        val symbols = rules.map { it.symbol }.toSet()
         activeRules = rules
 
-        val newMaxWindows = rules.groupBy { it.symbol }
-            .mapValues { (_, symbolRules) -> symbolRules.maxOf { it.windowMinutes } }
-
-        newMaxWindows.forEach { (symbol, maxWindow) ->
-            val oldWindow = maxWindowBySymbol[symbol] ?: 0
-            if (!history.containsKey(symbol) || maxWindow > oldWindow) {
-                seedHistory(symbol, maxWindow)
+        val grouped = rules.groupBy { key(it.marketType, it.symbol) }
+        grouped.forEach { (_, symbolRules) ->
+            val first = symbolRules.first()
+            val maxWindow = symbolRules.maxOf { it.windowMinutes }
+            val mapKey = key(first.marketType, first.symbol)
+            val oldWindow = maxWindowByKey[mapKey] ?: 0
+            if (!history.containsKey(mapKey) || maxWindow > oldWindow) {
+                seedHistory(first.marketType, first.symbol, maxWindow)
             }
-            maxWindowBySymbol[symbol] = maxWindow
+            maxWindowByKey[mapKey] = maxWindow
         }
 
-        maxWindowBySymbol.keys.filterNot { it in symbols }.forEach { symbol ->
-            maxWindowBySymbol.remove(symbol)
-            history.remove(symbol)
+        val validKeys = grouped.keys
+        maxWindowByKey.keys.filterNot { it in validKeys }.forEach { mapKey ->
+            maxWindowByKey.remove(mapKey)
+            history.remove(mapKey)
         }
 
-        if (symbols != activeSymbols) {
-            activeSymbols = symbols
-            reconnectWebSocket(symbols)
+        val newSpot = rules.filter { it.marketType == MarketType.SPOT }.map { it.symbol }.toSet()
+        val newFutures = rules.filter { it.marketType == MarketType.FUTURES }.map { it.symbol }.toSet()
+
+        if (newSpot != spotSymbols) {
+            spotSymbols = newSpot
+            reconnectWebSocket(MarketType.SPOT, newSpot)
+        }
+        if (newFutures != futuresSymbols) {
+            futuresSymbols = newFutures
+            reconnectWebSocket(MarketType.FUTURES, newFutures)
         }
 
-        if (rules.isEmpty()) {
-            updateMonitor("Нет активных правил")
-        }
+        if (rules.isEmpty()) updateMonitor("Нет активных правил")
     }
 
-    private fun reconnectWebSocket(symbols: Set<String>) {
-        socketGeneration++
-        val generation = socketGeneration
-        reconnectScheduled.set(false)
-        webSocketConnected = false
-        socket?.cancel()
-        socket = null
+    private fun reconnectWebSocket(marketType: MarketType, symbols: Set<String>) {
+        val generation = (generations[marketType] ?: 0) + 1
+        generations[marketType] = generation
+        reconnectPending.remove(marketType)
+        connectedMarkets.remove(marketType)
+        sockets.remove(marketType)?.cancel()
 
-        if (symbols.isEmpty()) return
+        if (symbols.isEmpty()) {
+            updateLiveStatus()
+            return
+        }
 
         val streams = symbols.sorted().joinToString("/") { "${it.lowercase()}@aggTrade" }
-        val url = "wss://stream.binance.com:9443/stream?streams=$streams"
+        val base = when (marketType) {
+            MarketType.SPOT -> "wss://stream.binance.com:9443/stream?streams="
+            MarketType.FUTURES -> "wss://fstream.binance.com/stream?streams="
+        }
         val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", "CryptoAlarm/0.5")
+            .url(base + streams)
+            .header("User-Agent", "CryptoAlarm/0.7")
             .build()
 
-        socket = client.newWebSocket(request, object : WebSocketListener() {
+        val socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (generation != socketGeneration) return
-                webSocketConnected = true
-                reconnectScheduled.set(false)
-                updateMonitor("⚡ Live WebSocket • ${symbols.size} монет • реакция по сделкам")
+                if (generation != generations[marketType]) return
+                connectedMarkets.add(marketType)
+                reconnectPending.remove(marketType)
+                updateLiveStatus()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                if (generation != socketGeneration) return
+                if (generation != generations[marketType]) return
                 runCatching {
                     val root = JSONObject(text)
                     val data = root.optJSONObject("data") ?: root
                     val symbol = data.optString("s")
                     val price = data.optString("p").toDoubleOrNull() ?: return
                     val eventTime = data.optLong("E", System.currentTimeMillis())
-                    if (symbol.isNotBlank()) processLivePrice(symbol, price, eventTime)
+                    if (symbol.isNotBlank()) processLivePrice(marketType, symbol, price, eventTime)
                 }
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                if (generation != socketGeneration) return
-                webSocketConnected = false
+                if (generation != generations[marketType]) return
+                connectedMarkets.remove(marketType)
                 webSocket.close(code, reason)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (generation != socketGeneration) return
-                webSocketConnected = false
-                scheduleReconnect(generation)
+                if (generation != generations[marketType]) return
+                connectedMarkets.remove(marketType)
+                scheduleReconnect(marketType, generation)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (generation != socketGeneration) return
-                webSocketConnected = false
-                updateMonitor("Live временно недоступен • включён REST-резерв")
-                scheduleReconnect(generation)
+                if (generation != generations[marketType]) return
+                connectedMarkets.remove(marketType)
+                updateMonitor("${marketType.label} Live временно недоступен • REST-резерв")
+                scheduleReconnect(marketType, generation)
             }
         })
+        sockets[marketType] = socket
     }
 
-    private fun scheduleReconnect(generation: Int) {
-        if (!RuleStore.isMonitoring(this) || activeSymbols.isEmpty()) return
-        if (!reconnectScheduled.compareAndSet(false, true)) return
+    private fun scheduleReconnect(marketType: MarketType, generation: Int) {
+        if (!RuleStore.isMonitoring(this)) return
+        val symbols = symbolsFor(marketType)
+        if (symbols.isEmpty() || !reconnectPending.add(marketType)) return
         scope.launch {
             delay(1_500)
-            reconnectScheduled.set(false)
-            if (generation == socketGeneration && RuleStore.isMonitoring(this@MarketMonitorService)) {
-                reconnectWebSocket(activeSymbols)
+            reconnectPending.remove(marketType)
+            if (generation == generations[marketType] && RuleStore.isMonitoring(this@MarketMonitorService)) {
+                reconnectWebSocket(marketType, symbolsFor(marketType))
             }
         }
     }
 
-    private fun processLivePrice(symbol: String, price: Double, eventTime: Long) {
-        val symbolRules = activeRules.filter { it.symbol == symbol }
+    private fun symbolsFor(marketType: MarketType): Set<String> =
+        if (marketType == MarketType.SPOT) spotSymbols else futuresSymbols
+
+    private fun processLivePrice(marketType: MarketType, symbol: String, price: Double, eventTime: Long) {
+        val symbolRules = activeRules.filter { it.marketType == marketType && it.symbol == symbol }
         if (symbolRules.isEmpty()) return
 
         val maxWindow = symbolRules.maxOf { it.windowMinutes }
-        val deque = history.getOrPut(symbol) { ArrayDeque() }
+        val mapKey = key(marketType, symbol)
+        val deque = history.getOrPut(mapKey) { ArrayDeque() }
         synchronized(deque) {
             val last = deque.peekLast()
             if (last == null || eventTime - last.timestamp >= 1_000L) {
@@ -212,18 +227,19 @@ class MarketMonitorService : Service() {
         }
 
         symbolRules.forEach { rule ->
-            val baseline = findBaseline(symbol, eventTime - rule.windowMinutes * 60_000L) ?: return@forEach
+            val baseline = findBaseline(marketType, symbol, eventTime - rule.windowMinutes * 60_000L) ?: return@forEach
             evaluateRule(rule, price, baseline, eventTime)
         }
 
         val now = System.currentTimeMillis()
-        if (now - lastStatusUpdate.get() >= 5_000L && lastStatusUpdate.compareAndSet(lastStatusUpdate.get(), now)) {
-            updateMonitor("⚡ Live • ${symbol.removeSuffix("USDT")}: ${formatPrice(price)} • правил: ${activeRules.size}")
+        val previous = lastStatusUpdate.get()
+        if (now - previous >= 5_000L && lastStatusUpdate.compareAndSet(previous, now)) {
+            updateMonitor("⚡ ${marketType.label} • ${symbol.removeSuffix("USDT")}: ${formatPrice(price)} • правил: ${activeRules.size}")
         }
     }
 
-    private fun findBaseline(symbol: String, targetTime: Long): Double? {
-        val deque = history[symbol] ?: return null
+    private fun findBaseline(marketType: MarketType, symbol: String, targetTime: Long): Double? {
+        val deque = history[key(marketType, symbol)] ?: return null
         synchronized(deque) {
             val iterator = deque.descendingIterator()
             while (iterator.hasNext()) {
@@ -253,19 +269,23 @@ class MarketMonitorService : Service() {
         }
     }
 
-    private suspend fun seedHistory(symbol: String, maxWindow: Int) = withContext(Dispatchers.IO) {
-        val points = fetchHistoryPoints(symbol, maxWindow + 2) ?: return@withContext
-        val deque = history.getOrPut(symbol) { ArrayDeque() }
+    private suspend fun seedHistory(marketType: MarketType, symbol: String, maxWindow: Int) = withContext(Dispatchers.IO) {
+        val points = fetchHistoryPoints(marketType, symbol, maxWindow + 2) ?: return@withContext
+        val deque = history.getOrPut(key(marketType, symbol)) { ArrayDeque() }
         synchronized(deque) {
             deque.clear()
             points.forEach { deque.addLast(it) }
         }
     }
 
-    private fun fetchHistoryPoints(symbol: String, limit: Int): List<PricePoint>? {
+    private fun fetchHistoryPoints(marketType: MarketType, symbol: String, limit: Int): List<PricePoint>? {
         val safeLimit = limit.coerceIn(2, 1000)
-        val url = "https://api.binance.com/api/v3/klines?symbol=$symbol&interval=1m&limit=$safeLimit"
-        val req = Request.Builder().url(url).header("User-Agent", "CryptoAlarm/0.5").build()
+        val base = when (marketType) {
+            MarketType.SPOT -> "https://api.binance.com/api/v3/klines"
+            MarketType.FUTURES -> "https://fapi.binance.com/fapi/v1/klines"
+        }
+        val url = "$base?symbol=$symbol&interval=1m&limit=$safeLimit"
+        val req = Request.Builder().url(url).header("User-Agent", "CryptoAlarm/0.7").build()
         return runCatching {
             client.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) return null
@@ -287,14 +307,17 @@ class MarketMonitorService : Service() {
     private fun pollRestFallback() {
         val rules = activeRules
         if (rules.isEmpty()) return
-        rules.groupBy { it.symbol }.forEach { (symbol, symbolRules) ->
+        rules.groupBy { key(it.marketType, it.symbol) }.forEach { (_, symbolRules) ->
+            val first = symbolRules.first()
+            if (connectedMarkets.contains(first.marketType)) return@forEach
             val maxWindow = symbolRules.maxOf { it.windowMinutes }
-            val points = fetchHistoryPoints(symbol, maxWindow + 2) ?: return@forEach
+            val points = fetchHistoryPoints(first.marketType, first.symbol, maxWindow + 2) ?: return@forEach
             if (points.size < 2) return@forEach
             val current = points.last().price
             val now = System.currentTimeMillis()
+            val mapKey = key(first.marketType, first.symbol)
 
-            val deque = history.getOrPut(symbol) { ArrayDeque() }
+            val deque = history.getOrPut(mapKey) { ArrayDeque() }
             synchronized(deque) {
                 deque.clear()
                 points.forEach { deque.addLast(it) }
@@ -302,11 +325,10 @@ class MarketMonitorService : Service() {
             }
 
             symbolRules.forEach { rule ->
-                val baseline = findBaseline(symbol, now - rule.windowMinutes * 60_000L) ?: return@forEach
+                val baseline = findBaseline(rule.marketType, rule.symbol, now - rule.windowMinutes * 60_000L) ?: return@forEach
                 evaluateRule(rule, current, baseline, now)
             }
         }
-        updateMonitor("REST-резерв • переподключаю Live…")
     }
 
     private fun triggerAlarm(rule: AlarmRule, price: Double, change: Double, eventTime: Long) {
@@ -314,7 +336,7 @@ class MarketMonitorService : Service() {
         val coin = rule.symbol.removeSuffix("USDT")
         val rising = rule.direction == AlertDirection.RISE
         val title = if (rising) "📈 $coin растёт!" else "📉 $coin падает!"
-        val text = String.format("%+.2f%% за %d мин • цена %s", change, rule.windowMinutes, formatPrice(price))
+        val text = String.format("%s • %+.2f%% за %d мин • цена %s", rule.marketType.label, change, rule.windowMinutes, formatPrice(price))
         val thresholdText = if (rising) "+${rule.thresholdPercent}%" else "-${rule.thresholdPercent}%"
         val latency = (System.currentTimeMillis() - eventTime).coerceAtLeast(0)
 
@@ -404,10 +426,12 @@ class MarketMonitorService : Service() {
         fallbackJob?.cancel()
         configJob = null
         fallbackJob = null
-        socketGeneration++
-        socket?.cancel()
-        socket = null
-        webSocketConnected = false
+        MarketType.entries.forEach { market ->
+            generations[market] = (generations[market] ?: 0) + 1
+            sockets.remove(market)?.cancel()
+        }
+        connectedMarkets.clear()
+        reconnectPending.clear()
         RuleStore.setMonitoring(this, false)
         releaseWakeLock()
         player?.runCatching { release() }
@@ -453,12 +477,22 @@ class MarketMonitorService : Service() {
             .build()
     }
 
+    private fun updateLiveStatus() {
+        val parts = buildList {
+            if (spotSymbols.isNotEmpty()) add(if (MarketType.SPOT in connectedMarkets) "Spot ✓" else "Spot …")
+            if (futuresSymbols.isNotEmpty()) add(if (MarketType.FUTURES in connectedMarkets) "Futures ✓" else "Futures …")
+        }
+        updateMonitor(if (parts.isEmpty()) "Нет активных правил" else "⚡ Live • ${parts.joinToString(" • ")}")
+    }
+
     private fun updateMonitor(text: String) {
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(
             NOTIFICATION_MONITOR,
             monitorNotification(text)
         )
     }
+
+    private fun key(marketType: MarketType, symbol: String): String = "${marketType.name}:$symbol"
 
     private fun formatPrice(p: Double): String = when {
         p >= 1000 -> String.format("$%,.0f", p)
@@ -469,9 +503,11 @@ class MarketMonitorService : Service() {
     override fun onDestroy() {
         configJob?.cancel()
         fallbackJob?.cancel()
-        socketGeneration++
-        socket?.cancel()
-        socket = null
+        MarketType.entries.forEach { market ->
+            generations[market] = (generations[market] ?: 0) + 1
+            sockets.remove(market)?.cancel()
+        }
+        connectedMarkets.clear()
         releaseWakeLock()
         player?.runCatching { release() }
         player = null
