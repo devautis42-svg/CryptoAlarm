@@ -17,7 +17,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             NotificationPermissionGate()
-            CryptoAlarmV07App()
+            CryptoAlarmV08App()
         }
     }
 
