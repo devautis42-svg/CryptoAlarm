@@ -33,7 +33,10 @@ object MarketDataRepository {
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
-    suspend fun loadPopularTickers(symbols: List<String>, marketType: MarketType): List<MarketTicker> = withContext(Dispatchers.IO) {
+    suspend fun loadPopularTickers(
+        symbols: List<String>,
+        marketType: MarketType = MarketType.SPOT
+    ): List<MarketTicker> = withContext(Dispatchers.IO) {
         runCatching {
             val wanted = symbols.map { if (it.endsWith("USDT")) it else "${it}USDT" }.toSet()
             val url = when (marketType) {
@@ -56,7 +59,10 @@ object MarketDataRepository {
         }.getOrElse { emptyList() }
     }
 
-    suspend fun loadTicker(symbol: String, marketType: MarketType): MarketTicker? = withContext(Dispatchers.IO) {
+    suspend fun loadTicker(
+        symbol: String,
+        marketType: MarketType = MarketType.SPOT
+    ): MarketTicker? = withContext(Dispatchers.IO) {
         runCatching {
             val base = when (marketType) {
                 MarketType.SPOT -> "https://api.binance.com/api/v3/ticker/24hr"
@@ -71,7 +77,12 @@ object MarketDataRepository {
         }.getOrNull()
     }
 
-    suspend fun loadCandles(symbol: String, interval: String, limit: Int = 120, marketType: MarketType): List<Candle> = withContext(Dispatchers.IO) {
+    suspend fun loadCandles(
+        symbol: String,
+        interval: String,
+        limit: Int = 120,
+        marketType: MarketType = MarketType.SPOT
+    ): List<Candle> = withContext(Dispatchers.IO) {
         runCatching {
             val safeLimit = limit.coerceIn(20, 500)
             val base = when (marketType) {
