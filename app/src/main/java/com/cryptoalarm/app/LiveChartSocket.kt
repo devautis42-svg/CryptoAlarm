@@ -33,19 +33,35 @@ class LiveChartSocket(
     @Volatile
     private var stopped = false
     private var socket: WebSocket? = null
+    private var dataSeen = false
+    private var reconnectAttempt = 0
 
     private val reconnectRunnable = Runnable {
         if (!stopped) connect()
     }
 
+    private val noDataWatchdog = object : Runnable {
+        override fun run() {
+            if (stopped) return
+            if (!dataSeen) {
+                socket?.cancel()
+                scheduleReconnect(400L)
+            } else {
+                mainHandler.postDelayed(this, 10_000L)
+            }
+        }
+    }
+
     fun start() {
         stopped = false
+        reconnectAttempt = 0
         connect()
     }
 
     fun stop() {
         stopped = true
         mainHandler.removeCallbacks(reconnectRunnable)
+        mainHandler.removeCallbacks(noDataWatchdog)
         socket?.close(1000, "chart closed")
         socket = null
         mainHandler.post { onConnectedChanged(false) }
@@ -56,36 +72,71 @@ class LiveChartSocket(
     private fun connect() {
         if (stopped) return
         mainHandler.removeCallbacks(reconnectRunnable)
+        mainHandler.removeCallbacks(noDataWatchdog)
+        dataSeen = false
+        mainHandler.post { onConnectedChanged(false) }
 
-        val stream = "${symbol.lowercase()}@aggTrade"
+        val s = symbol.lowercase()
+        val streams = "$s@aggTrade/$s@miniTicker"
         val url = when (marketType) {
-            MarketType.SPOT -> "wss://stream.binance.com:9443/ws/$stream"
-            MarketType.FUTURES -> "wss://fstream.binance.com/ws/$stream"
+            MarketType.SPOT -> {
+                if (reconnectAttempt % 2 == 0) {
+                    "wss://stream.binance.com:443/stream?streams=$streams"
+                } else {
+                    "wss://data-stream.binance.vision/stream?streams=$streams"
+                }
+            }
+            MarketType.FUTURES -> "wss://fstream.binance.com/stream?streams=$streams"
         }
 
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "CryptoAlarm/1.1")
+            .header("User-Agent", "CryptoAlarm/1.1.1")
             .build()
 
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                mainHandler.post { onConnectedChanged(true) }
+                // Do not show LIVE yet. We only mark the stream live after
+                // receiving an actual market-data event.
+                mainHandler.postDelayed(noDataWatchdog, 6_000L)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 runCatching {
-                    val json = JSONObject(text)
-                    val price = json.optString("p").toDoubleOrNull() ?: return
-                    val quantity = json.optString("q").toDoubleOrNull() ?: 0.0
-                    val tradeTime = when {
-                        json.has("T") -> json.optLong("T")
-                        json.has("E") -> json.optLong("E")
-                        else -> System.currentTimeMillis()
+                    val outer = JSONObject(text)
+                    val data = if (outer.has("data")) outer.optJSONObject("data") ?: outer else outer
+                    val eventType = data.optString("e")
+
+                    val trade = when (eventType) {
+                        "aggTrade" -> {
+                            val price = data.optString("p").toDoubleOrNull() ?: return
+                            val quantity = data.optString("q").toDoubleOrNull() ?: 0.0
+                            val eventTime = when {
+                                data.has("T") -> data.optLong("T")
+                                data.has("E") -> data.optLong("E")
+                                else -> System.currentTimeMillis()
+                            }
+                            LiveTrade(price, quantity, eventTime)
+                        }
+                        "24hrMiniTicker" -> {
+                            val price = data.optString("c").toDoubleOrNull() ?: return
+                            val eventTime = data.optLong("E", System.currentTimeMillis())
+                            LiveTrade(price, 0.0, eventTime)
+                        }
+                        else -> null
                     }
-                    val trade = LiveTrade(price, quantity, tradeTime)
-                    mainHandler.post {
-                        if (!stopped) onTrade(trade)
+
+                    if (trade != null) {
+                        mainHandler.post {
+                            if (!stopped) {
+                                if (!dataSeen) {
+                                    dataSeen = true
+                                    reconnectAttempt = 0
+                                    onConnectedChanged(true)
+                                }
+                                onTrade(trade)
+                            }
+                        }
                     }
                 }
             }
@@ -98,6 +149,7 @@ class LiveChartSocket(
                 if (stopped) return
                 mainHandler.post {
                     onConnectedChanged(false)
+                    reconnectAttempt++
                     scheduleReconnect()
                 }
             }
@@ -106,16 +158,18 @@ class LiveChartSocket(
                 if (stopped) return
                 mainHandler.post {
                     onConnectedChanged(false)
+                    reconnectAttempt++
                     scheduleReconnect()
                 }
             }
         })
     }
 
-    private fun scheduleReconnect() {
+    private fun scheduleReconnect(delayMs: Long = 1_000L) {
         if (stopped) return
         mainHandler.removeCallbacks(reconnectRunnable)
-        mainHandler.postDelayed(reconnectRunnable, 1_200L)
+        mainHandler.removeCallbacks(noDataWatchdog)
+        mainHandler.postDelayed(reconnectRunnable, delayMs)
     }
 }
 
@@ -139,7 +193,7 @@ fun applyLiveTradeToCandles(
     if (current.isEmpty()) return current
 
     val result = current.toMutableList()
-    var last = result.last()
+    val last = result.last()
 
     if (trade.tradeTime < last.openTime) return current
 
