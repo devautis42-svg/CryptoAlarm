@@ -20,11 +20,15 @@ object CoinRepository {
         "RUNE", "MKR", "GRT", "ALGO", "VET", "FET", "RENDER", "IMX", "SEI", "TIA"
     )
 
-    suspend fun loadUsdtSymbols(): List<String> = withContext(Dispatchers.IO) {
+    suspend fun loadUsdtSymbols(marketType: MarketType = MarketType.SPOT): List<String> = withContext(Dispatchers.IO) {
         runCatching {
+            val url = when (marketType) {
+                MarketType.SPOT -> "https://api.binance.com/api/v3/exchangeInfo"
+                MarketType.FUTURES -> "https://fapi.binance.com/fapi/v1/exchangeInfo"
+            }
             val request = Request.Builder()
-                .url("https://api.binance.com/api/v3/exchangeInfo")
-                .header("User-Agent", "CryptoAlarm/0.4")
+                .url(url)
+                .header("User-Agent", "CryptoAlarm/0.7")
                 .build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) error("HTTP ${response.code}")
@@ -35,11 +39,12 @@ object CoinRepository {
                         val item = symbols.getJSONObject(i)
                         val quote = item.optString("quoteAsset")
                         val status = item.optString("status")
-                        val spotAllowed = item.optBoolean("isSpotTradingAllowed", true)
-                        if (quote == "USDT" && status == "TRADING" && spotAllowed) {
-                            val base = item.optString("baseAsset")
-                            if (base.isNotBlank()) add(base)
+                        val base = item.optString("baseAsset")
+                        val allowed = when (marketType) {
+                            MarketType.SPOT -> item.optBoolean("isSpotTradingAllowed", true)
+                            MarketType.FUTURES -> item.optString("contractType") == "PERPETUAL"
                         }
+                        if (quote == "USDT" && status == "TRADING" && allowed && base.isNotBlank()) add(base)
                     }
                 }.distinct().sorted()
             }
