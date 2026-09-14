@@ -11,6 +11,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -41,12 +42,20 @@ fun ComponentActivity.CryptoAlarmApp() {
         var direction by remember { mutableStateOf(AlertDirection.DROP) }
         var percent by remember { mutableStateOf("0.5") }
         var minutes by remember { mutableStateOf("5") }
+        var coinQuery by remember { mutableStateOf("") }
+        var availableCoins by remember { mutableStateOf(CoinRepository.fallback()) }
+        var coinsLoading by remember { mutableStateOf(true) }
 
         val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
         LaunchedEffect(Unit) {
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this@CryptoAlarmApp, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
+        }
+        LaunchedEffect(Unit) {
+            coinsLoading = true
+            availableCoins = CoinRepository.loadUsdtSymbols()
+            coinsLoading = false
         }
 
         Scaffold(topBar = { TopAppBar(title = { Text("Crypto Alarm", fontWeight = FontWeight.Bold) }) }) { pad ->
@@ -125,9 +134,58 @@ fun ComponentActivity.CryptoAlarmApp() {
                 item { Text("Создать тревогу", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) }
 
                 item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("BTCUSDT", "ETHUSDT", "SOLUSDT").forEach { s ->
-                            FilterChip(selected = symbol == s, onClick = { symbol = s }, label = { Text(s.removeSuffix("USDT")) })
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Выбрано: ${symbol.removeSuffix("USDT")}", fontWeight = FontWeight.SemiBold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("BTC", "ETH", "SOL").forEach { coin ->
+                                FilterChip(
+                                    selected = symbol == "${coin}USDT",
+                                    onClick = { symbol = "${coin}USDT"; coinQuery = "" },
+                                    label = { Text(coin) }
+                                )
+                            }
+                        }
+
+                        OutlinedTextField(
+                            value = coinQuery,
+                            onValueChange = { coinQuery = it.uppercase().filter { c -> c.isLetterOrDigit() }.take(15) },
+                            label = { Text("Поиск монеты") },
+                            placeholder = { Text("Например: DOGE, XRP, PEPE, SUI") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+
+                        if (coinsLoading) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Text("Загружаю доступные USDT-монеты Binance…", style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            val matches = remember(coinQuery, availableCoins) {
+                                if (coinQuery.isBlank()) emptyList()
+                                else availableCoins.filter { it.contains(coinQuery, ignoreCase = true) }.take(8)
+                            }
+                            matches.forEach { coin ->
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth().clickable {
+                                        symbol = "${coin}USDT"
+                                        coinQuery = ""
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    tonalElevation = 2.dp
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(coin, fontWeight = FontWeight.Medium)
+                                        Text("${coin}/USDT", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                            if (coinQuery.isNotBlank() && matches.isEmpty()) {
+                                Text("Монета не найдена среди доступных USDT-пар Binance", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Text("Доступно USDT-монет: ${availableCoins.size}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -239,7 +297,7 @@ fun ComponentActivity.CryptoAlarmApp() {
                 }
 
                 item {
-                    Text("Важно: сканирование каждую 1 секунду сильнее расходует батарею и чаще обращается к публичному API Binance. Для обычного использования разумнее 3–10 секунд.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Список монет загружается из публичных USDT-пар Binance. Если интернет недоступен при запуске, используется резервный список популярных монет.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
