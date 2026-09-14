@@ -5,7 +5,6 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,7 +17,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -55,6 +53,7 @@ private val chartTimeframes = listOf(
 
 @Composable
 fun ComponentActivity.CryptoAlarmV06App() {
+    val activity = this
     val colors = darkColorScheme(
         primary = AccentBlue,
         secondary = AccentGreen,
@@ -65,8 +64,8 @@ fun ComponentActivity.CryptoAlarmV06App() {
 
     MaterialTheme(colorScheme = colors) {
         var tab by remember { mutableStateOf(AppTab.HOME) }
-        var rules by remember { mutableStateOf(RuleStore.load(this)) }
-        var monitoring by remember { mutableStateOf(RuleStore.isMonitoring(this)) }
+        var rules by remember { mutableStateOf(RuleStore.load(activity)) }
+        var monitoring by remember { mutableStateOf(RuleStore.isMonitoring(activity)) }
         var selectedSymbol by remember { mutableStateOf("BTCUSDT") }
         var coins by remember { mutableStateOf(CoinRepository.fallback()) }
 
@@ -94,12 +93,12 @@ fun ComponentActivity.CryptoAlarmV06App() {
                         monitoring = monitoring,
                         onToggleMonitoring = {
                             if (monitoring) {
-                                startService(Intent(this@CryptoAlarmV06App, MarketMonitorService::class.java).setAction(MarketMonitorService.ACTION_STOP))
+                                activity.startService(Intent(activity, MarketMonitorService::class.java).setAction(MarketMonitorService.ACTION_STOP))
                                 monitoring = false
                             } else if (rules.any { it.enabled }) {
                                 ContextCompat.startForegroundService(
-                                    this@CryptoAlarmV06App,
-                                    Intent(this@CryptoAlarmV06App, MarketMonitorService::class.java).setAction(MarketMonitorService.ACTION_START)
+                                    activity,
+                                    Intent(activity, MarketMonitorService::class.java).setAction(MarketMonitorService.ACTION_START)
                                 )
                                 monitoring = true
                             }
@@ -113,7 +112,7 @@ fun ComponentActivity.CryptoAlarmV06App() {
                         coins = coins,
                         onRulesChange = { newRules ->
                             rules = newRules
-                            RuleStore.save(this@CryptoAlarmV06App, newRules)
+                            RuleStore.save(activity, newRules)
                         }
                     )
                     AppTab.MARKET -> MarketScreen(
@@ -129,19 +128,19 @@ fun ComponentActivity.CryptoAlarmV06App() {
                         onSymbolChange = { selectedSymbol = it }
                     )
                     AppTab.SETTINGS -> SettingsScreen(
-                        scanSeconds = RuleStore.getScanIntervalSeconds(this).toString(),
-                        onSaveScan = { RuleStore.setScanIntervalSeconds(this, it) },
+                        scanSeconds = RuleStore.getScanIntervalSeconds(activity).toString(),
+                        onSaveScan = { RuleStore.setScanIntervalSeconds(activity, it) },
                         onBatterySettings = {
                             runCatching {
-                                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                    data = Uri.parse("package:$packageName")
+                                activity.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                    data = Uri.parse("package:${activity.packageName}")
                                 })
                             }.onFailure {
-                                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                activity.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                             }
                         },
                         onSilence = {
-                            startService(Intent(this, MarketMonitorService::class.java).setAction(MarketMonitorService.ACTION_SILENCE))
+                            activity.startService(Intent(activity, MarketMonitorService::class.java).setAction(MarketMonitorService.ACTION_SILENCE))
                         }
                     )
                 }
@@ -339,7 +338,7 @@ private fun CreateAlarmDialog(coins: List<String>, onDismiss: () -> Unit, onCrea
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = query,
-                    onValueChange = { query = it.uppercase().filter(Char::isLetterOrDigit).take(12) },
+                    onValueChange = { query = it.uppercase().filter { c -> c.isLetterOrDigit() }.take(12) },
                     label = { Text("Монета") },
                     singleLine = true
                 )
@@ -607,7 +606,13 @@ private fun CandlestickChart(candles: List<Candle>, modifier: Modifier = Modifie
         val last = visible.lastOrNull()
         if (last != null) {
             val y = chartHeight - (((last.close - minPrice) / priceRange).toFloat() * chartHeight)
-            drawLine(AccentGreen.copy(alpha = .65f), Offset(0f, y), Offset(size.width, y), 1f, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(8f, 8f)))
+            drawLine(
+                AccentGreen.copy(alpha = .65f),
+                Offset(0f, y),
+                Offset(size.width, y),
+                1f,
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
+            )
         }
     }
 }
