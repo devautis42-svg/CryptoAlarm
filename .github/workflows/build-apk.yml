@@ -35,6 +35,9 @@ jobs:
       - name: Apply Futures REST fallback v1.2.3
         run: python3 scripts/apply_futures_rest_fallback_v123.py
 
+      - name: Apply market filters v1.2.4
+        run: python3 scripts/apply_market_filters_v124.py
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
