@@ -38,6 +38,9 @@ jobs:
       - name: Apply market filters v1.2.4
         run: python3 scripts/apply_market_filters_v124.py
 
+      - name: Apply alarm engine fix v1.2.5
+        run: python3 scripts/apply_alarm_engine_v125.py
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
