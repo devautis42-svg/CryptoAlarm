@@ -448,13 +448,11 @@ private fun VInteractiveChartPanel(candles: List<Candle>, live: Boolean) {
     Surface(Modifier.padding(horizontal = 16.dp).fillMaxWidth(), color = VSurface2, shape = RoundedCornerShape(22.dp), border = BorderStroke(1.dp, Color.White.copy(alpha = .035f))) {
         Column(Modifier.padding(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                VTool("−", Modifier.width(52.dp)) { visibleCount = (visibleCount + 10).coerceAtMost(maxVisible); endIndex = endIndex.coerceAtLeast(visibleCount); selectedIndex = null }
-                VTool("📏  Линейка", Modifier.weight(1.05f), selected = rulerMode) { rulerMode = !rulerMode; selectedIndex = null; if (!rulerMode) { rulerStart = null; rulerEnd = null } }
-                VTool("К последней", Modifier.weight(1.2f), accent = true) { resetToLatest() }
-                VTool("+", Modifier.width(52.dp)) { visibleCount = (visibleCount - 10).coerceAtLeast(minVisible); endIndex = endIndex.coerceAtLeast(visibleCount); selectedIndex = null }
+                VTool("📏  Линейка", Modifier.weight(1f), selected = rulerMode) { rulerMode = !rulerMode; selectedIndex = null; if (!rulerMode) { rulerStart = null; rulerEnd = null } }
+                VTool("К последней", Modifier.weight(1f), accent = true) { resetToLatest() }
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("$visibleCount свечей", color = VMuted, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                Text("$visibleCount свечей • масштаб двумя пальцами", color = VMuted, fontSize = 11.sp, modifier = Modifier.weight(1f))
                 Text(if (live) "⚡ обновляется по сделкам" else "ожидание Live…", color = if (live) VGreen else VMuted, fontSize = 11.sp)
                 if (rulerMode) {
                     Spacer(Modifier.width(8.dp)); Text(when { rulerStart == null -> "1-я точка"; rulerEnd == null -> "2-я точка"; else -> "готово" }, color = VBlue, fontSize = 11.sp)
@@ -471,7 +469,8 @@ private fun VInteractiveChartPanel(candles: List<Candle>, live: Boolean) {
                         .pointerInput(total, visibleCount, endIndex) {
                             var panAccumulator = 0f
                             detectTransformGestures { _, pan, zoom, _ ->
-                                val newVisible = (visibleCount / zoom).roundToInt().coerceIn(minVisible, maxVisible)
+                                val effectiveZoom = 1f + (zoom - 1f) * 1.2f
+                                val newVisible = (visibleCount / effectiveZoom).roundToInt().coerceIn(minVisible, maxVisible)
                                 if (newVisible != visibleCount) { visibleCount = newVisible; endIndex = endIndex.coerceIn(visibleCount, total); selectedIndex = null }
                                 val plotWidth = size.width * .87f
                                 val pxPerCandle = plotWidth / visibleCount.coerceAtLeast(1)
@@ -562,7 +561,7 @@ private fun VSettings(activity: ComponentActivity, scan: Int) {
         item { Surface(Modifier.padding(horizontal = 16.dp).fillMaxWidth(), color = VSurface, shape = RoundedCornerShape(17.dp)) { Column(Modifier.padding(16.dp)) { Text("Резервный REST-скан", fontWeight = FontWeight.Bold); Text("Для сигналов при потере Live WebSocket", fontSize = 12.sp, color = VMuted); Spacer(Modifier.height(9.dp)); Row(verticalAlignment = Alignment.CenterVertically) { OutlinedTextField(value = seconds, onValueChange = { seconds = it.filter(Char::isDigit).take(5) }, modifier = Modifier.weight(1f), label = { Text("Секунд") }, singleLine = true); Spacer(Modifier.width(8.dp)); Button(onClick = { RuleStore.setScanIntervalSeconds(activity, (seconds.toIntOrNull() ?: 1).coerceAtLeast(1)) }) { Text("Сохранить") } } } } }
         item { VAction("🔋", "Оптимизация батареи", "Разрешить работу мониторинга в фоне") { runCatching { activity.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply { data = Uri.parse("package:${activity.packageName}") }) }.onFailure { activity.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) } } }
         item { VAction("🔇", "Остановить звук", "Заглушить активную тревогу") { activity.startService(Intent(activity, MarketMonitorService::class.java).setAction(MarketMonitorService.ACTION_SILENCE)) } }
-        item { Surface(Modifier.padding(horizontal = 16.dp).fillMaxWidth(), color = VSurface, shape = RoundedCornerShape(17.dp)) { Column(Modifier.padding(16.dp)) { Text("Crypto Alarm", fontWeight = FontWeight.Bold); Text("Версия 1.1.0 • ⚡ Live Chart", color = VMuted, fontSize = 13.sp) } } }
+        item { Surface(Modifier.padding(horizontal = 16.dp).fillMaxWidth(), color = VSurface, shape = RoundedCornerShape(17.dp)) { Column(Modifier.padding(16.dp)) { Text("Crypto Alarm", fontWeight = FontWeight.Bold); Text("Версия 1.1.2 • pinch-to-zoom", color = VMuted, fontSize = 13.sp) } } }
     }
 }
 
