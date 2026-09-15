@@ -23,6 +23,9 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Apply smooth chart v1.2 source migration
+        run: python3 scripts/apply_smooth_chart.py
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
