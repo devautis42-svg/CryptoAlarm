@@ -26,6 +26,9 @@ jobs:
       - name: Apply smooth chart v1.2 source migration
         run: python3 scripts/apply_smooth_chart.py
 
+      - name: Apply Futures live fix v1.2.1
+        run: python3 scripts/apply_futures_live_fix.py
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
