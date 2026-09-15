@@ -29,6 +29,9 @@ jobs:
       - name: Apply Futures live fix v1.2.1
         run: python3 scripts/apply_futures_live_fix.py
 
+      - name: Apply Futures kline LIVE v1.2.2
+        run: python3 scripts/apply_futures_kline_v122.py
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
