@@ -44,6 +44,9 @@ jobs:
       - name: Apply night watchdog v1.2.6
         run: python3 scripts/apply_night_watchdog_v126.py
 
+      - name: Apply ringtone + Futures Live v1.2.7
+        run: python3 scripts/apply_ringtone_futures_live_v127.py
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
