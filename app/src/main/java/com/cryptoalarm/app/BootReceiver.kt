@@ -17,6 +17,7 @@ class BootReceiver : BroadcastReceiver() {
             val serviceIntent = Intent(context, MarketMonitorService::class.java)
                 .setAction(MarketMonitorService.ACTION_START)
             ContextCompat.startForegroundService(context, serviceIntent)
+            ServiceWatchdog.schedule(context, 15_000L)
         }
     }
 }
