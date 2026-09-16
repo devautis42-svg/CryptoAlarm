@@ -56,6 +56,9 @@ jobs:
       - name: Apply routed Futures WebSocket v1.3.0
         run: python3 scripts/apply_futures_routed_ws_v130.py
 
+      - name: Generate bundled alarm tones v1.3.1
+        run: python3 scripts/generate_alarm_tones_v131.py
+
       - name: Apply clean UI + alarm presets + price scale v1.3.1
         run: python3 scripts/apply_ui_alarm_price_scale_v131.py
 
