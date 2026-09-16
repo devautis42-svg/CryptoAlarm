@@ -47,6 +47,9 @@ jobs:
       - name: Apply ringtone + Futures Live v1.2.7
         run: python3 scripts/apply_ringtone_futures_live_v127.py
 
+      - name: Apply Futures WS diagnostics v1.2.8
+        run: python3 scripts/apply_futures_ws_diagnostics_v128.py
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
