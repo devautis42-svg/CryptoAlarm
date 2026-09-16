@@ -1,1 +1,0 @@
-Futures WebSocket diagnostics are applied by apply_futures_ws_diagnostics_v128.py.
