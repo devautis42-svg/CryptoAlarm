@@ -50,6 +50,9 @@ jobs:
       - name: Apply Futures WS diagnostics v1.2.8
         run: python3 scripts/apply_futures_ws_diagnostics_v128.py
 
+      - name: Apply alarm REST reliability v1.2.9
+        run: python3 scripts/apply_alarm_rest_reliability_v129.py
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
