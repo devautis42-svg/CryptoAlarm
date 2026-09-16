@@ -53,6 +53,9 @@ jobs:
       - name: Apply alarm REST reliability v1.2.9
         run: python3 scripts/apply_alarm_rest_reliability_v129.py
 
+      - name: Apply routed Futures WebSocket v1.3.0
+        run: python3 scripts/apply_futures_routed_ws_v130.py
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
