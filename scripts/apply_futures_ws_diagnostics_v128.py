@@ -8,8 +8,6 @@ build_path = root / "app/build.gradle.kts"
 
 socket = socket_path.read_text(encoding="utf-8")
 
-# Add a diagnostic callback to the chart socket so the UI can show the exact
-# Futures connection phase / error instead of a generic CONNECTING label.
 ctor_old = '''    private val interval: String,
     private val onConnectedChanged: (Boolean) -> Unit,
     private val onTrade: (LiveTrade) -> Unit,
@@ -25,8 +23,6 @@ if ctor_old not in socket:
     raise RuntimeError("Could not locate LiveChartSocket constructor")
 socket = socket.replace(ctor_old, ctor_new, 1)
 
-# Helper keeps diagnostic updates on the main thread and trims noisy exception
-# strings so the message remains readable on a phone screen.
 insert_before = '    private fun connect() {'
 helper = '''    private fun diagnostic(message: String) {
         val compact = message.replace("\\n", " ").replace("\\r", " ").take(140)
@@ -39,21 +35,11 @@ if 'private fun diagnostic(message: String)' not in socket:
         raise RuntimeError("Could not locate connect()")
     socket = socket.replace(insert_before, helper + insert_before, 1)
 
-# Report which Futures connection mode is being attempted.
-url_anchor = '''        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", "CryptoAlarm/1.2.7")
-            .build()
-'''
-if url_anchor not in socket:
-    # Be tolerant if the user-agent stayed at the previous version.
-    url_anchor = re.search(r'''        val request = Request\.Builder\(\)\n            \.url\(url\)\n            \.header\("User-Agent", "CryptoAlarm/[^"]+"\)\n            \.build\(\)\n''', socket)
-    if not url_anchor:
-        raise RuntimeError("Could not locate chart request block")
-    old_request = url_anchor.group(0)
-else:
-    old_request = url_anchor
-
+request_pattern = re.compile(r'''        val request = Request\.Builder\(\)\n            \.url\(url\)\n            \.header\("User-Agent", "CryptoAlarm/[^"]+"\)\n            \.build\(\)\n''')
+request_match = request_pattern.search(socket)
+if not request_match:
+    raise RuntimeError("Could not locate chart request block")
+old_request = request_match.group(0)
 new_request = '''        if (marketType == MarketType.FUTURES) {
             val mode = if (reconnectAttempt % 2 == 0) "SUBSCRIBE /ws" else "RAW kline"
             diagnostic("CONNECTING • Futures • $mode")
@@ -66,10 +52,8 @@ new_request = '''        if (marketType == MarketType.FUTURES) {
 '''
 socket = socket.replace(old_request, new_request, 1)
 
-# Enrich onOpen with connection phase information while preserving the v1.2.7
-# SUBSCRIBE behavior.
 open_pattern = re.compile(
-    r'''            override fun onOpen\(webSocket: WebSocket, response: Response\) \{.*?\n                mainHandler\.postDelayed\(noDataWatchdog, 6_000L\)\n            \}\n''',
+    r'''            override fun onOpen\(webSocket: WebSocket, response: Response\) \{.*?\n                mainHandler\.postDelayed\(noDataWatchdog, 5_000L\)\n            \}\n''',
     re.S,
 )
 match = open_pattern.search(socket)
@@ -85,7 +69,6 @@ new_open = old_open.replace(
     '                }\n',
     1,
 )
-# Report successful send of the SUBSCRIBE request.
 new_open = new_open.replace(
     '                    webSocket.send(subscription)\n',
     '                    val sent = webSocket.send(subscription)\n'
@@ -94,8 +77,6 @@ new_open = new_open.replace(
 )
 socket = socket.replace(old_open, new_open, 1)
 
-# Show Binance subscription acknowledgement messages that otherwise have no
-# event type and were silently ignored.
 msg_anchor = '''                    val eventType = data.optString("e")
 
                     when (eventType) {'''
@@ -110,8 +91,6 @@ if msg_anchor not in socket:
     raise RuntimeError("Could not locate WebSocket message parser")
 socket = socket.replace(msg_anchor, msg_replacement, 1)
 
-# The first actual kline packet is the strongest signal that Futures WS is
-# genuinely live.
 kline_anchor = '''                            markDataSeen()
                             if (!stopped) onKline(update)
 '''
@@ -126,14 +105,13 @@ if kline_anchor not in socket:
     raise RuntimeError("Could not locate kline dispatch")
 socket = socket.replace(kline_anchor, kline_replacement, 1)
 
-# Report stale-data watchdog events before cancelling the connection.
 watch_anchor = '''            if (!dataSeen || stale) {
                 mainHandler.post { if (!stopped) onConnectedChanged(false) }
                 socket?.cancel()
             } else {'''
 watch_replacement = '''            if (!dataSeen || stale) {
                 if (marketType == MarketType.FUTURES) {
-                    val reason = if (!dataSeen) "NO DATA • 6–8с после открытия" else "STALE • данные не идут >8с"
+                    val reason = if (!dataSeen) "NO DATA • после открытия" else "STALE • данные не идут >8с"
                     diagnostic(reason)
                 }
                 mainHandler.post { if (!stopped) onConnectedChanged(false) }
@@ -143,7 +121,6 @@ if watch_anchor not in socket:
     raise RuntimeError("Could not locate stale watchdog branch")
 socket = socket.replace(watch_anchor, watch_replacement, 1)
 
-# Capture close codes and the actual Throwable class/message on failures.
 closing_anchor = '''            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (stopped) return
                 mainHandler.post {
@@ -196,15 +173,9 @@ failure_replacement = '''            override fun onFailure(webSocket: WebSocket
 if failure_anchor not in socket:
     raise RuntimeError("Could not locate onFailure")
 socket = socket.replace(failure_anchor, failure_replacement, 1)
-
 socket_path.write_text(socket, encoding="utf-8")
 
-# ---------------------------------------------------------------------------
-# Chart UI: surface the latest WS diagnostic directly below the LIVE badge and
-# explicitly label REST fallback so it cannot be mistaken for "reset".
-# ---------------------------------------------------------------------------
 app = app_path.read_text(encoding="utf-8")
-
 state_anchor = '    var restFallbackActive by remember { mutableStateOf(false) }\n'
 if state_anchor not in app:
     raise RuntimeError("Could not locate restFallbackActive state")
@@ -215,7 +186,6 @@ if 'wsDiagnostic' not in app:
         1,
     )
 
-# Wire the diagnostic callback into LiveChartSocket.
 socket_call_anchor = '''            onTrade = { trade -> liveTrades.offer(trade) },
             onKline = { kline -> liveKlines.offer(kline) }
 '''
@@ -226,17 +196,12 @@ socket_call_replacement = '''            onTrade = { trade -> liveTrades.offer(t
 if socket_call_anchor not in app:
     raise RuntimeError("Could not locate LiveChartSocket call")
 app = app.replace(socket_call_anchor, socket_call_replacement, 1)
-
-# Rename the fallback badge for clarity.
 app = app.replace('restFallbackActive -> "↻ LIVE REST"', 'restFallbackActive -> "↻ REST LIVE"')
 
-# Add diagnostic text immediately after the badge Surface in the chart header.
-# We anchor on the exact text block emitted by v1.2.3 and retained by v1.2.7.
 badge_tail = '''                        fontSize = 11.sp
                     )
                 }
 '''
-# Find the first occurrence after the REST LIVE badge only.
 badge_pos = app.find('restFallbackActive -> "↻ REST LIVE"')
 if badge_pos < 0:
     raise RuntimeError("Could not locate chart LIVE badge")
@@ -265,14 +230,9 @@ diag_ui = '''                if (market == MarketType.FUTURES) {
                 }
 '''
 app = app[:insert_pos] + diag_ui + app[insert_pos:]
-
-app = app.replace(
-    'Версия 1.2.7 • мелодии + Futures Live',
-    'Версия 1.2.8 • диагностика Futures WS'
-)
+app = app.replace('Версия 1.2.7 • мелодии + Futures Live', 'Версия 1.2.8 • диагностика Futures WS')
 app_path.write_text(app, encoding="utf-8")
 
-# Final version bump.
 build = build_path.read_text(encoding="utf-8")
 build = re.sub(r'versionCode = \d+', 'versionCode = 22', build, count=1)
 build = re.sub(r'versionName = "[^"]+"', 'versionName = "1.2.8"', build, count=1)
