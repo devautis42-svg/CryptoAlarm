@@ -65,6 +65,9 @@ jobs:
       - name: Apply settings syntax fix v1.3.2
         run: python3 scripts/apply_settings_fix_v132.py
 
+      - name: Apply free TradingView chart pan v1.3.3
+        run: python3 scripts/apply_free_chart_pan_v133.py
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
