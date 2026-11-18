@@ -22,10 +22,10 @@ jobs:
         run: dotnet publish desktop/CryptoAlarm.Windows/CryptoAlarm.Windows.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:PublishTrimmed=false -p:DebugType=None --output desktop/dist/CryptoAlarm-Windows
       - name: Zip portable application
         shell: pwsh
-        run: Compress-Archive -Path desktop/dist/CryptoAlarm-Windows/* -DestinationPath desktop/dist/CryptoAlarm-Windows-v0.1.zip -Force
+        run: Compress-Archive -Path desktop/dist/CryptoAlarm-Windows/* -DestinationPath desktop/dist/CryptoAlarm-Windows-v0.2.zip -Force
       - name: Upload portable EXE package
         uses: actions/upload-artifact@v4
         with:
-          name: CryptoAlarm-Windows-v0.1
-          path: desktop/dist/CryptoAlarm-Windows-v0.1.zip
+          name: CryptoAlarm-Windows-v0.2
+          path: desktop/dist/CryptoAlarm-Windows-v0.2.zip
           if-no-files-found: error

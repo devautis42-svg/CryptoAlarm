@@ -5,13 +5,13 @@ namespace CryptoAlarm.Windows;
 public sealed class AlarmDialog : Form
 {
     private readonly ComboBox marketCombo;
-    private readonly TextBox symbolBox;
+    private readonly SymbolPicker symbolBox;
     private readonly ComboBox directionCombo;
     private readonly NumericUpDown percent;
     private readonly NumericUpDown minutes;
     public AlarmRule? CreatedRule { get; private set; }
 
-    public AlarmDialog(MarketKind defaultMarket)
+    public AlarmDialog(MarketKind defaultMarket, BinanceApi api)
     {
         Text = "Новый будильник Crypto Alarm";
         Size = new Size(430, 440);
@@ -41,8 +41,9 @@ public sealed class AlarmDialog : Form
         marketCombo.Items.AddRange(new object[] { "Spot", "Futures USDT-M" });
         marketCombo.SelectedIndex = defaultMarket == MarketKind.Spot ? 0 : 1;
 
-        symbolBox = new TextBox { Text = "ETHUSDT", CharacterCasing = CharacterCasing.Upper,
-            PlaceholderText = "ETHUSDT" };
+        symbolBox = new SymbolPicker(api, defaultMarket, "ETHUSDT");
+        marketCombo.SelectedIndexChanged += (_, _) =>
+            symbolBox.SetMarket(marketCombo.SelectedIndex == 0 ? MarketKind.Spot : MarketKind.Futures);
         directionCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         directionCombo.Items.AddRange(new object[] { "📉 Падение", "📈 Рост" });
         directionCombo.SelectedIndex = 0;
@@ -88,9 +89,9 @@ public sealed class AlarmDialog : Form
         {
             var symbol = symbolBox.Text.Trim().ToUpperInvariant().Replace("/", "").Replace(" ", "");
             if (!symbol.EndsWith("USDT", StringComparison.Ordinal)) symbol += "USDT";
-            if (symbol.Length < 6 || symbol.Length > 20 || !symbol.All(char.IsLetterOrDigit))
+            if (!symbolBox.IsKnownSymbol(symbol))
             {
-                MessageBox.Show(this, "Введите корректную пару, например ETHUSDT.",
+                MessageBox.Show(this, "Выберите доступную USDT-пару из подсказок. Если список ещё загружается, попробуйте немного позже.",
                     "Монета", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }

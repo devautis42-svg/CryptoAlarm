@@ -21,7 +21,7 @@ public sealed partial class MainForm : Form
     private readonly Panel content = new();
     private readonly Label liveStatus = new();
     private readonly Dictionary<string, Button> navButtons = new();
-    private readonly System.Windows.Forms.Timer tickTimer = new() { Interval = 2500 };
+    private readonly System.Windows.Forms.Timer tickTimer = new() { Interval = 1000 };
     private readonly System.Windows.Forms.Timer repeatAlarmTimer = new() { Interval = 1800 };
     private string currentTab = "Главная";
     private bool exiting, firstTrayMessage;
@@ -30,7 +30,12 @@ public sealed partial class MainForm : Form
     private List<Ticker> tickers = new();
     private List<Candle> chartCandles = new();
     private DateTimeOffset tickersAt = DateTimeOffset.MinValue;
-    private bool loadingTickers, loadingChart;
+    private bool loadingTickers;
+    private readonly System.Windows.Forms.Timer chartFrameTimer = new() { Interval = 40 };
+    private ChartFeed? chartFeed;
+    private bool chartLoading;
+    private DateTimeOffset chartRestAt;
+    private int chartGeneration;
     private DataGridView? marketGrid, alarmGrid;
     private TextBox? marketSearch;
     private string sortBy = "volume";
@@ -69,7 +74,7 @@ public sealed partial class MainForm : Form
         sidebar.Controls.Add(brand);
         sidebar.Controls.Add(new Label
         {
-            Text = "WINDOWS  •  v0.1.0", ForeColor = Muted,
+            Text = "WINDOWS  •  v0.2.0", ForeColor = Muted,
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
             Location = new Point(23, 72), Size = new Size(175, 28)
         });
@@ -136,6 +141,8 @@ public sealed partial class MainForm : Form
             if (currentTab == "График") await RefreshChartAsync(false);
         };
         tickTimer.Start();
+        chartFrameTimer.Tick += (_, _) => DrainChartFeed();
+        chartFrameTimer.Start();
         repeatAlarmTimer.Tick += (_, _) => SystemSounds.Exclamation.Play();
         ShowTab("Главная");
         if (settings.StartMonitoringOnLaunch) monitor.Start();
@@ -157,6 +164,7 @@ public sealed partial class MainForm : Form
 
     private void ShowTab(string tab)
     {
+        StopChartFeed();
         currentTab = tab;
         foreach (var kv in navButtons)
         {
@@ -164,6 +172,7 @@ public sealed partial class MainForm : Form
             kv.Value.BackColor = on ? Color.FromArgb(45, 64, 119) : Surface2;
             kv.Value.ForeColor = on ? Color.White : Muted;
         }
+        foreach (Control control in content.Controls.Cast<Control>().ToArray()) control.Dispose();
         content.Controls.Clear();
         content.AutoScroll = false;
         marketGrid = null;
@@ -202,43 +211,119 @@ public sealed partial class MainForm : Form
         finally { loadingTickers = false; }
     }
 
+    private void StopChartFeed()
+    {
+        chartGeneration++;
+        chartFeed?.Dispose();
+        chartFeed = null;
+        chartLoading = false;
+        chartCandles = new();
+        chartRestAt = DateTimeOffset.MinValue;
+    }
+
     private async Task RefreshChartAsync(bool all)
     {
-        if (loadingChart || chartView is null) return;
-        loadingChart = true;
+        if (currentTab != "График" || chartView is null) return;
+        if (all || chartFeed is null)
+        {
+            StopChartFeed();
+            chartView.Reset();
+            chartStatus!.Text = "Подключение…";
+            chartStatus.ForeColor = Muted;
+            chartPrice!.Text = selectedSymbol;
+            chartFeed = new ChartFeed(market, selectedSymbol, selectedInterval);
+        }
+        if (chartLoading) return;
+        var feed = chartFeed;
+        bool initial = chartCandles.Count == 0;
+        if (!initial && feed.IsFresh) return;
+        if (!initial && DateTimeOffset.UtcNow - chartRestAt < TimeSpan.FromMilliseconds(850)) return;
+        chartLoading = true;
+        chartRestAt = DateTimeOffset.UtcNow;
+        int generation = chartGeneration;
         var kind = market;
         var symbol = selectedSymbol;
         var frame = selectedInterval;
         try
         {
-            var fresh = await api.GetCandlesAsync(kind, symbol, frame, all ? 300 : 3, lifetime.Token);
-            if (currentTab == "График" && chartView is not null &&
-                kind == market && symbol == selectedSymbol && frame == selectedInterval)
+            var fresh = await api.GetCandlesAsync(kind, symbol, frame, initial ? 500 : 3, lifetime.Token);
+            if (generation != chartGeneration || chartView is null || fresh.Count == 0) return;
+            if (initial || !feed.IsFresh)
             {
-                if (all || chartCandles.Count == 0) chartCandles = fresh;
-                else
-                {
-                    var map = chartCandles.ToDictionary(c => c.OpenTime);
-                    foreach (var candle in fresh) map[candle.OpenTime] = candle;
-                    chartCandles = map.Values.OrderBy(c => c.OpenTime).TakeLast(500).ToList();
-                }
-                chartView.SetCandles(chartCandles);
-                chartStatus!.Text = "↻  REST LIVE  •  Binance " + (kind == MarketKind.Spot ? "Spot" : "Futures") +
-                    "  •  обновление ~2.5 сек";
-                chartStatus.ForeColor = Green;
-                if (chartCandles.Count > 0) chartPrice!.Text = $"{symbol}   {Price(chartCandles[^1].Close)} USDT";
+                var map = chartCandles.ToDictionary(c => c.OpenTime);
+                foreach (var candle in fresh) map[candle.OpenTime] = candle;
+                chartCandles = map.Values.OrderBy(c => c.OpenTime).TakeLast(500).ToList();
+                RenderChart();
+            }
+            if (!feed.IsFresh)
+            {
+                chartStatus!.Text = "↻ REST • резервное обновление ~1 сек";
+                chartStatus.ForeColor = Muted;
             }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            if (currentTab == "График" && chartStatus is not null)
+            if (generation == chartGeneration && chartStatus is not null && !feed.IsFresh)
             {
                 chartStatus.Text = "Нет связи: " + ex.Message;
                 chartStatus.ForeColor = Red;
             }
         }
-        finally { loadingChart = false; }
+        finally { if (generation == chartGeneration) chartLoading = false; }
+    }
+
+    private void DrainChartFeed()
+    {
+        var feed = chartFeed;
+        if (feed is null || chartView is null || chartCandles.Count == 0 ||
+            currentTab != "График") return;
+        bool changed = false;
+        // Drain market packets in batches, keeping rendering on the UI thread.
+        while (feed.Packets.TryDequeue(out var packet))
+        {
+            if (packet.Bar is Candle bar)
+            {
+                int i = chartCandles.FindLastIndex(c => c.OpenTime == bar.OpenTime);
+                if (i >= 0) chartCandles[i] = bar;
+                else if (bar.OpenTime > chartCandles[^1].OpenTime) chartCandles.Add(bar);
+                else continue;
+                changed = true;
+            }
+            else if (packet.Price > 0)
+            {
+                var last = chartCandles[^1];
+                // Do not assign a trade to a closed candle at a timeframe boundary.
+                if (packet.At < last.OpenTime || packet.At >= ChartFeed.EndOf(last.OpenTime, selectedInterval)) continue;
+                chartCandles[^1] = last with {
+                    High = Math.Max(last.High, packet.Price),
+                    Low = Math.Min(last.Low, packet.Price), Close = packet.Price
+                };
+                changed = true;
+            }
+        }
+        if (changed)
+        {
+            if (chartCandles.Count > 500) chartCandles = chartCandles.TakeLast(500).ToList();
+            RenderChart();
+        }
+        if (feed.IsFresh)
+        {
+            chartStatus!.Text = "⚡ LIVE • Binance WebSocket";
+            chartStatus.ForeColor = Green;
+        }
+        else if (chartStatus!.Text.StartsWith("⚡"))
+        {
+            chartStatus.Text = "Переподключение…";
+            chartStatus.ForeColor = Muted;
+        }
+    }
+
+    private void RenderChart()
+    {
+        chartView?.SetCandles(chartCandles);
+        if (chartPrice is not null && chartCandles.Count > 0)
+            chartPrice.Text = $"{selectedSymbol}   {Price(chartCandles[^1].Close)} USDT";
     }
 
     private void OnAlarm(AlertEvent alarm)
@@ -327,6 +412,8 @@ public sealed partial class MainForm : Form
             return;
         }
         tickTimer.Stop();
+        chartFrameTimer.Stop();
+        StopChartFeed();
         repeatAlarmTimer.Stop();
         lifetime.Cancel();
         monitor.Dispose();

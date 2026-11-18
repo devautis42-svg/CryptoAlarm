@@ -15,6 +15,11 @@ public sealed class CandleChart : Control
     private double span = 68d;
     private double end;
     private bool dragging;
+    private bool floatingScale;
+    private decimal scaleHigh, scaleLow;
+    private double RightPad => Math.Max(3, span * 0.13);
+    private double MaxEnd => candles.Count + Math.Max(3, span * 0.7);
+    private double MinEnd => Math.Max(1, span * 0.3);
     private bool measuring;
     private Point lastPoint;
     private Point? pointer, rulerStart, rulerEnd;
@@ -29,26 +34,50 @@ public sealed class CandleChart : Control
         TabStop = true;
     }
 
+    public void Reset()
+    {
+        candles.Clear();
+        span = 68;
+        end = 0;
+        floatingScale = false;
+        rulerStart = rulerEnd = pointer = null;
+        Invalidate();
+    }
+
     public void SetCandles(List<Candle> incoming)
     {
-        bool follow = end >= candles.Count - 0.5 || candles.Count == 0;
-        candles = incoming.OrderBy(c => c.OpenTime).ToList();
-        span = Math.Clamp(span, 8, Math.Max(8, Math.Min(240, candles.Count)));
-        if (follow) end = candles.Count;
-        else end = Math.Clamp(end, span, Math.Max(span, candles.Count));
+        bool follow = candles.Count == 0 || Math.Abs(end - (candles.Count + RightPad)) < 0.7;
+        var oldFirst = candles.Count > 0 ? candles[0].OpenTime : DateTimeOffset.MinValue;
+        var next = incoming.ToList();
+        if (!follow && next.Count > 0 && oldFirst != next[0].OpenTime && candles.Count > 0)
+        {
+            int shift = candles.FindIndex(x => x.OpenTime == next[0].OpenTime);
+            if (shift > 0) end -= shift;
+        }
+        candles = next;
+        span = Math.Clamp(span, MinSpan, MaxSpan);
+        end = follow ? candles.Count + RightPad : Math.Clamp(end, MinEnd, MaxEnd);
         Invalidate();
     }
 
     public void GoToLatest()
     {
-        end = candles.Count;
+        end = candles.Count + RightPad;
+        floatingScale = false;
+        rulerStart = rulerEnd = null;
         Invalidate();
+    }
+
+    protected override void OnMouseDoubleClick(MouseEventArgs e)
+    {
+        base.OnMouseDoubleClick(e);
+        GoToLatest();
     }
 
     private RectangleF Plot => new(14, 18, Math.Max(100, Width - 112), Math.Max(90, Height - 58));
     private double Start => end - span;
     private double MinSpan => Math.Min(8, Math.Max(1, candles.Count));
-    private double MaxSpan => Math.Min(240, Math.Max(1, candles.Count));
+    private double MaxSpan => Math.Min(500, Math.Max(1, candles.Count));
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
@@ -66,6 +95,7 @@ public sealed class CandleChart : Control
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (!dragging && !Focused) Focus();
         pointer = e.Location;
         if (dragging)
         {
@@ -76,9 +106,29 @@ public sealed class CandleChart : Control
             else if (candles.Count > 0)
             {
                 var dx = e.X - lastPoint.X;
-                var start = Start - dx * span / Plot.Width;
-                start = Math.Clamp(start, 0, Math.Max(0, candles.Count - span));
-                end = start + span;
+                int dy = e.Y - lastPoint.Y;
+                if (lastPoint.X >= Plot.Right)
+                {
+                    if (scaleHigh > scaleLow)
+                    {
+                        floatingScale = true;
+                        var mid = (scaleHigh + scaleLow) / 2m;
+                        var half = (scaleHigh - scaleLow) / 2m * (decimal)Math.Exp(Math.Clamp(dy * .009, -.5, .5));
+                        scaleHigh = mid + half;
+                        scaleLow = mid - half;
+                    }
+                }
+                else
+                {
+                    end = Math.Clamp(end - dx * span / Plot.Width, MinEnd, MaxEnd);
+                    if (dy != 0 && scaleHigh > scaleLow)
+                    {
+                        floatingScale = true;
+                        decimal delta = (scaleHigh - scaleLow) * dy / (decimal)Plot.Height;
+                        scaleHigh += delta;
+                        scaleLow += delta;
+                    }
+                }
             }
         }
         lastPoint = e.Location;
@@ -108,10 +158,9 @@ public sealed class CandleChart : Control
         var focal = Math.Clamp((e.X - p.Left) / p.Width, 0f, 1f);
         var oldSpan = span;
         var focalCandle = Start + focal * oldSpan;
-        var factor = Math.Pow(1.12, e.Delta / 120.0);
+        var factor = Math.Pow(1.22, e.Delta / 120.0);
         span = Math.Clamp(oldSpan / factor, MinSpan, MaxSpan);
-        var newStart = Math.Clamp(focalCandle - focal * span, 0, Math.Max(0, candles.Count - span));
-        end = newStart + span;
+        end = Math.Clamp(focalCandle - focal * span + span, MinEnd, MaxEnd);
         Invalidate();
     }
 
@@ -129,7 +178,7 @@ public sealed class CandleChart : Control
         }
 
         span = Math.Clamp(span, MinSpan, MaxSpan);
-        end = Math.Clamp(end, span, Math.Max(span, candles.Count));
+        end = Math.Clamp(end, MinEnd, MaxEnd);
         int first = Math.Clamp((int)Math.Floor(Start), 0, candles.Count - 1);
         int after = Math.Clamp((int)Math.Ceiling(end), first + 1, candles.Count);
         var visible = candles.GetRange(first, after - first);
@@ -138,6 +187,8 @@ public sealed class CandleChart : Control
         if (high <= low) { high += 1; low -= 1; }
         decimal pad = (high - low) * 0.065m;
         high += pad; low -= pad;
+        if (floatingScale && scaleHigh > scaleLow) { high = scaleHigh; low = scaleLow; }
+        else { scaleHigh = high; scaleLow = low; }
         var scale = (double)(high - low);
 
         float X(int idx) => p.Left + (float)((idx + 0.5 - Start) / span * p.Width);
@@ -162,7 +213,9 @@ public sealed class CandleChart : Control
                 faded, new PointF(x - 30, p.Bottom + 8), 8);
         }
 
-        float w = Math.Max(1.5f, Math.Min(28f, p.Width / (float)span * .66f));
+        var clipState = g.Save();
+        g.SetClip(p);
+        float w = Math.Max(1.5f, Math.Min(45f, p.Width / (float)span * .70f));
         for (int i = first; i < after; i++)
         {
             var c = candles[i];
@@ -177,6 +230,7 @@ public sealed class CandleChart : Control
             g.FillRectangle(fill, x - w / 2, topBody, w, Math.Max(1.4f, bottomBody - topBody));
         }
 
+        g.Restore(clipState);
         var last = candles[^1];
         float lastY = Y(last.Close);
         if (lastY >= p.Top && lastY <= p.Bottom)
@@ -198,7 +252,8 @@ public sealed class CandleChart : Control
 
         if (rulerStart is Point r1 && rulerEnd is Point r2 && p.Contains(r1))
         {
-            g.DrawLine(new Pen(Color.Gold, 2), r1, r2);
+            using var rulerPen = new Pen(Color.Gold, 2);
+            g.DrawLine(rulerPen, r1, r2);
             decimal startPrice = high - (decimal)((r1.Y - p.Top) / p.Height) * (high - low);
             decimal endPrice = high - (decimal)((r2.Y - p.Top) / p.Height) * (high - low);
             if (startPrice != 0)

@@ -69,5 +69,26 @@ public sealed class BinanceApi : IDisposable
         return result;
     }
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<MarketKind, (DateTimeOffset At, string[] Symbols)> symbolCache = new();
+
+    public async Task<string[]> GetSymbolsAsync(MarketKind market, CancellationToken ct = default)
+    {
+        if (symbolCache.TryGetValue(market, out var cached) &&
+            DateTimeOffset.UtcNow - cached.At < TimeSpan.FromMinutes(10)) return cached.Symbols;
+        using var response = await client.GetAsync(Base(market) + "/exchangeInfo", ct);
+        response.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+        var result = doc.RootElement.GetProperty("symbols").EnumerateArray()
+            .Where(x => x.GetProperty("status").GetString() == "TRADING" &&
+                x.GetProperty("quoteAsset").GetString() == "USDT" &&
+                (market == MarketKind.Futures
+                    ? x.TryGetProperty("contractType", out var type) && type.GetString() == "PERPETUAL"
+                    : !x.TryGetProperty("isSpotTradingAllowed", out var allowed) || allowed.GetBoolean()))
+            .Select(x => x.GetProperty("symbol").GetString()!)
+            .OrderBy(x => x, StringComparer.Ordinal).ToArray();
+        symbolCache[market] = (DateTimeOffset.UtcNow, result);
+        return result;
+    }
+
     public void Dispose() => client.Dispose();
 }

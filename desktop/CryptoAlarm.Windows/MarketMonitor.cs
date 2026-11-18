@@ -168,7 +168,7 @@ public sealed class MarketMonitor : IDisposable
     private async Task StreamTradesAsync(MarketKind market, string symbol, CancellationToken ct)
     {
         string uri = market == MarketKind.Futures
-            ? $"wss://fstream.binance.com/ws/{symbol.ToLowerInvariant()}@aggTrade"
+            ? $"wss://fstream.binance.com/market/ws/{symbol.ToLowerInvariant()}@aggTrade"
             : $"wss://stream.binance.com:443/ws/{symbol.ToLowerInvariant()}@aggTrade";
         while (!ct.IsCancellationRequested && IsTracked(market, symbol))
         {

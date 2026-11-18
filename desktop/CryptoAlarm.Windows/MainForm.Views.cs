@@ -124,7 +124,7 @@ public sealed partial class MainForm
 
     private void AddAlarm()
     {
-        using var dialog = new AlarmDialog(market);
+        using var dialog = new AlarmDialog(market, api);
         if (dialog.ShowDialog(this) != DialogResult.OK || dialog.CreatedRule is null) return;
         settings.Rules.Add(dialog.CreatedRule);
         Save();
@@ -274,32 +274,22 @@ public sealed partial class MainForm
             BackColor = Bg, Padding = new Padding(0, 3, 0, 6)
         };
         var marketChoice = MarketCombo();
+        controls.Controls.Add(marketChoice);
+
+        var pair = new SymbolPicker(api, market, selectedSymbol) { Width = 180 };
+        pair.Margin = new Padding(6, 7, 8, 0);
+        pair.SymbolChosen += symbol =>
+        {
+            if (selectedSymbol == symbol) return;
+            selectedSymbol = symbol;
+            _ = RefreshChartAsync(true);
+        };
         marketChoice.SelectedIndexChanged += (_, _) =>
         {
             market = marketChoice.SelectedIndex == 0 ? MarketKind.Spot : MarketKind.Futures;
             settings.LastMarket = market;
             Save();
-            chartCandles.Clear();
-            _ = RefreshChartAsync(true);
-        };
-        controls.Controls.Add(marketChoice);
-
-        var pair = new TextBox
-        {
-            Text = selectedSymbol, Width = 150, BackColor = Surface, ForeColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 12),
-            Margin = new Padding(6, 7, 8, 0)
-        };
-        pair.KeyDown += (_, ev) =>
-        {
-            if (ev.KeyCode != Keys.Enter) return;
-            ev.SuppressKeyPress = true;
-            string symbol = pair.Text.Trim().ToUpperInvariant().Replace("/", "").Replace(" ", "");
-            if (!symbol.EndsWith("USDT")) symbol += "USDT";
-            if (symbol.Length is < 6 or > 20) return;
-            selectedSymbol = symbol;
-            pair.Text = symbol;
-            chartCandles.Clear();
+            pair.SetMarket(market);
             _ = RefreshChartAsync(true);
         };
         controls.Controls.Add(pair);
@@ -335,7 +325,7 @@ public sealed partial class MainForm
         content.Controls.Add(bottom);
         content.Controls.Add(priceBar);
         content.Controls.Add(controls);
-        content.Controls.Add(SectionHeader("График", "Свечной график с перемещением и масштабом как в TradingView"));
+        content.Controls.Add(SectionHeader("График", "LIVE • колесо — масштаб • мышь — свободное перемещение"));
     }
 
     private void BuildSettings()
@@ -429,7 +419,7 @@ public sealed partial class MainForm
         list.Controls.Add(buttons);
 
         var info = TextLabel(
-            "Crypto Alarm Windows v0.1.0\n\n" +
+            "Crypto Alarm Windows v0.2.0\n\n" +
             "Данные: публичный Binance API. Ключ API не требуется.\n" +
             "Будильники и настройки сохраняются только на этом компьютере:\n" +
             LocalStore.Folder,
