@@ -153,7 +153,6 @@ public sealed partial class MainForm : Form
             else action();
         }
         catch (InvalidOperationException) { }
-        catch (ObjectDisposedException) { }
     }
 
     private void ShowTab(string tab)
