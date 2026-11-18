@@ -1,0 +1,31 @@
+name: Build Crypto Alarm for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/build-windows.yml'
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish standalone Windows EXE
+        shell: pwsh
+        run: dotnet publish desktop/CryptoAlarm.Windows/CryptoAlarm.Windows.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:PublishTrimmed=false -p:DebugType=None --output desktop/dist/CryptoAlarm-Windows
+      - name: Zip portable application
+        shell: pwsh
+        run: Compress-Archive -Path desktop/dist/CryptoAlarm-Windows/* -DestinationPath desktop/dist/CryptoAlarm-Windows-v0.1.zip -Force
+      - name: Upload portable EXE package
+        uses: actions/upload-artifact@v4
+        with:
+          name: CryptoAlarm-Windows-v0.1
+          path: desktop/dist/CryptoAlarm-Windows-v0.1.zip
+          if-no-files-found: error
