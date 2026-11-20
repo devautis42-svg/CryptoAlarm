@@ -43,6 +43,11 @@ public sealed partial class MainForm : Form
     private CandleChart? chartView;
     private Label? chartStatus, chartPrice;
     private SoundPlayer? alarmPlayer;
+    private AlarmPopup? alarmPopup;
+    private bool soundActive, testSound;
+    private long silenceAt;
+    private readonly Button silenceButton = new();
+    private readonly System.Windows.Forms.Timer alarmDeadline = new() { Interval = 250 };
     private readonly CancellationTokenSource lifetime = new();
 
     public MainForm()
@@ -74,7 +79,7 @@ public sealed partial class MainForm : Form
         sidebar.Controls.Add(brand);
         sidebar.Controls.Add(new Label
         {
-            Text = "WINDOWS  •  v0.2.0", ForeColor = Muted,
+            Text = "WINDOWS  •  v0.3.0", ForeColor = Muted,
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
             Location = new Point(23, 72), Size = new Size(175, 28)
         });
@@ -107,11 +112,23 @@ public sealed partial class MainForm : Form
         liveStatus.BackColor = Surface2;
         liveStatus.Font = new Font("Segoe UI", 9);
         sidebar.Controls.Add(liveStatus);
+        silenceButton.Text = "■ Остановить звук";
+        silenceButton.Dock = DockStyle.Bottom;
+        silenceButton.Height = 56;
+        silenceButton.BackColor = Red;
+        silenceButton.ForeColor = Color.White;
+        silenceButton.FlatStyle = FlatStyle.Flat;
+        silenceButton.FlatAppearance.BorderSize = 0;
+        silenceButton.Font = new Font("Segoe UI", 11, FontStyle.Bold);
+        silenceButton.Cursor = Cursors.Hand;
+        silenceButton.Enabled = false;
+        silenceButton.Click += (_, _) => SilenceAlarm();
+        sidebar.Controls.Add(silenceButton);
 
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("Открыть Crypto Alarm", null, (_, _) => RestoreWindow());
         trayMenu.Items.Add("Запустить мониторинг", null, (_, _) => monitor.Start());
-        trayMenu.Items.Add("Остановить мониторинг", null, (_, _) => monitor.Stop());
+        trayMenu.Items.Add("Остановить мониторинг", null, (_, _) => { monitor.Stop(); SilenceAlarm(); });
         trayMenu.Items.Add("Остановить звук", null, (_, _) => SilenceAlarm());
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("Выход", null, (_, _) => ExitApp());
@@ -120,7 +137,16 @@ public sealed partial class MainForm : Form
             Icon = SystemIcons.Application, Text = "Crypto Alarm",
             Visible = true, ContextMenuStrip = trayMenu
         };
-        tray.DoubleClick += (_, _) => RestoreWindow();
+        tray.DoubleClick += (_, _) =>
+        {
+            if (alarmPopup is { IsDisposed: false }) { alarmPopup.Show(); alarmPopup.Activate(); }
+            else RestoreWindow();
+        };
+        tray.BalloonTipClicked += (_, _) =>
+        {
+            if (alarmPopup is { IsDisposed: false }) { alarmPopup.Show(); alarmPopup.Activate(); }
+            else RestoreWindow();
+        };
         monitor.Alarm += ev => OnAlarm(ev);
         monitor.StatusChanged += msg => UI(() =>
         {
@@ -143,7 +169,14 @@ public sealed partial class MainForm : Form
         tickTimer.Start();
         chartFrameTimer.Tick += (_, _) => DrainChartFeed();
         chartFrameTimer.Start();
-        repeatAlarmTimer.Tick += (_, _) => SystemSounds.Exclamation.Play();
+        repeatAlarmTimer.Tick += (_, _) => { if (soundActive) SystemSounds.Exclamation.Play(); };
+        alarmDeadline.Tick += (_, _) =>
+        {
+            if (!soundActive) { alarmDeadline.Stop(); return; }
+            long remaining = silenceAt - Environment.TickCount64;
+            if (remaining <= 0) SilenceAlarm();
+            else alarmPopup?.SetRemaining((int)Math.Ceiling(remaining / 1000.0));
+        };
         ShowTab("Главная");
         if (settings.StartMonitoringOnLaunch) monitor.Start();
     }
@@ -330,30 +363,75 @@ public sealed partial class MainForm : Form
     {
         UI(() =>
         {
-            string coin = alarm.Rule.Symbol.Replace("USDT", "");
-            string direction = alarm.Rule.Direction == AlarmDirection.Drop ? "падает" : "растёт";
-            string title = $"⚠ {coin} {direction}!";
-            string message = $"{alarm.Rule.Market} • {alarm.ChangePercent:+0.00;-0.00;0.00}% " +
-                $"за {alarm.Rule.WindowMinutes} мин • {Price(alarm.Price)} USDT";
-            try
-            {
-                tray.BalloonTipTitle = title;
-                tray.BalloonTipText = message;
-                tray.ShowBalloonTip(12000);
-            }
-            catch { }
-            PlayAlarm();
-            // Important alerts are visible in foreground and still sound in tray.
-            if (Visible && WindowState != FormWindowState.Minimized)
-            {
-                MessageBox.Show(this, message, title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
+            if (exiting || !monitor.IsRunning) return;
+            string marketName = alarm.Rule.Market == MarketKind.Spot ? "Spot" : "Futures";
+            string direction = alarm.Rule.Direction == AlarmDirection.Drop ? "ПАДЕНИЕ" : "РОСТ";
+            string title = $"{alarm.Rule.Symbol}  •  {direction}";
+            string change = $"{alarm.ChangePercent:+0.00;-0.00;0.00}%";
+            string detail = $"{marketName}  •  за {alarm.Rule.WindowMinutes} мин  •  {Price(alarm.Price)} USDT";
+            // One alert window for all incoming signals; no modal dialogs or stacked alarms.
+            // New signals during the same ringing session do not extend its deadline.
+            ShowAlarmWindow(title, change, detail, alarm.Timestamp.ToLocalTime().ToString("HH:mm:ss"),
+                alarm.Rule.Direction == AlarmDirection.Drop ? Red : Green, false);
         });
     }
 
     private void PlayAlarm()
     {
-        SilenceAlarm();
+        // Settings preview gets the same accessible stop control and a short timeout.
+        // Do not interrupt a market alarm just to test the sound.
+        if (soundActive && !testSound)
+        {
+            alarmPopup?.Activate();
+            return;
+        }
+        ShowAlarmWindow("Проверка мелодии", "Тест звука", "Это не рыночный сигнал.",
+            DateTime.Now.ToString("HH:mm:ss"), Blue, true);
+    }
+
+    private void ShowAlarmWindow(string title, string change, string detail, string time, Color accent, bool preview)
+    {
+        if (soundActive && testSound && !preview) SilenceAlarm();
+        bool newSession = !soundActive;
+        int seconds = preview ? 10 : Math.Clamp(settings.AlarmSoundSeconds, 10, 180);
+        if (alarmPopup is null || alarmPopup.IsDisposed)
+        {
+            var popup = new AlarmPopup();
+            popup.StopRequested += SilenceAlarm;
+            popup.FormClosed += (_, _) =>
+            {
+                // Closing via X or Alt+F4 is also a full acknowledgement.
+                if (ReferenceEquals(alarmPopup, popup))
+                {
+                    alarmPopup = null;
+                    SilenceAlarm();
+                }
+            };
+            alarmPopup = popup;
+        }
+        alarmPopup.SetAlert(title, change, detail, time, accent, newSession);
+        alarmPopup.SetRemaining(newSession ? seconds :
+            Math.Max(0, (int)Math.Ceiling((silenceAt - Environment.TickCount64) / 1000.0)));
+        if (!alarmPopup.Visible)
+        {
+            var area = Screen.FromPoint(Cursor.Position).WorkingArea;
+            alarmPopup.Location = new Point(Math.Max(area.Left, area.Right - alarmPopup.Width - 18),
+                Math.Max(area.Top, area.Bottom - alarmPopup.Height - 18));
+            alarmPopup.Show(); // independent top-level window, including when the main form is hidden
+        }
+        if (newSession)
+        {
+            soundActive = true;
+            testSound = preview;
+            silenceAt = Environment.TickCount64 + seconds * 1000L;
+            silenceButton.Enabled = true;
+            alarmDeadline.Start();
+            StartAlarmAudio();
+        }
+    }
+
+    private void StartAlarmAudio()
+    {
         try
         {
             string chosen = settings.AlarmWavFile;
@@ -374,9 +452,17 @@ public sealed partial class MainForm : Form
 
     private void SilenceAlarm()
     {
+        soundActive = false;
+        testSound = false;
+        alarmDeadline.Stop();
         repeatAlarmTimer.Stop();
-        try { alarmPlayer?.Stop(); alarmPlayer?.Dispose(); } catch { }
+        try { alarmPlayer?.Stop(); } catch { }
+        try { alarmPlayer?.Dispose(); } catch { }
         alarmPlayer = null;
+        silenceButton.Enabled = false;
+        var popup = alarmPopup;
+        alarmPopup = null;
+        if (popup is { IsDisposed: false }) popup.Close();
     }
 
     private void RestoreWindow()
@@ -414,7 +500,7 @@ public sealed partial class MainForm : Form
         tickTimer.Stop();
         chartFrameTimer.Stop();
         StopChartFeed();
-        repeatAlarmTimer.Stop();
+        SilenceAlarm();
         lifetime.Cancel();
         monitor.Dispose();
         api.Dispose();

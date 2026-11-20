@@ -40,6 +40,7 @@ public sealed partial class MainForm
         buttons.Controls.Add(MakeButton("■ Остановить", (_, _) =>
         {
             monitor.Stop();
+            SilenceAlarm();
             ShowTab("Главная");
         }, false, 160));
         buttons.Controls.Add(MakeButton("＋ Будильник", (_, _) =>
@@ -90,7 +91,7 @@ public sealed partial class MainForm
         toolbar.Controls.Add(MakeButton("Вкл / выкл", (_, _) => ToggleAlarm(), false, 150));
         toolbar.Controls.Add(MakeButton("Удалить", (_, _) => DeleteAlarm(), false, 130));
         toolbar.Controls.Add(MakeButton("▶ Мониторинг", (_, _) => monitor.Start(), false, 150));
-        toolbar.Controls.Add(MakeButton("■ Стоп", (_, _) => monitor.Stop(), false, 95));
+        toolbar.Controls.Add(MakeButton("■ Стоп", (_, _) => { monitor.Stop(); SilenceAlarm(); }, false, 95));
 
         alarmGrid = MakeGrid();
         content.Controls.Add(alarmGrid);
@@ -418,8 +419,25 @@ public sealed partial class MainForm
         buttons.Controls.Add(MakeButton("■ Остановить звук", (_, _) => SilenceAlarm(), false, 175));
         list.Controls.Add(buttons);
 
+        var timeoutLabel = TextLabel("Максимальная длительность сигнала (секунды)", 13, true);
+        timeoutLabel.Margin = new Padding(0, 12, 0, 6);
+        list.Controls.Add(timeoutLabel);
+        var duration = new NumericUpDown
+        {
+            Minimum = 10, Maximum = 180, Increment = 10,
+            Value = Math.Clamp(settings.AlarmSoundSeconds, 10, 180),
+            Width = 170, BackColor = Surface, ForeColor = Color.White
+        };
+        duration.ValueChanged += (_, _) =>
+        {
+            settings.AlarmSoundSeconds = (int)duration.Value;
+            Save();
+        };
+        list.Controls.Add(duration);
+        list.Controls.Add(TextLabel("Звук можно остановить раньше. Мониторинг продолжит работу.", 10, false, Muted));
+
         var info = TextLabel(
-            "Crypto Alarm Windows v0.2.0\n\n" +
+            "Crypto Alarm Windows v0.3.0\n\n" +
             "Данные: публичный Binance API. Ключ API не требуется.\n" +
             "Будильники и настройки сохраняются только на этом компьютере:\n" +
             LocalStore.Folder,

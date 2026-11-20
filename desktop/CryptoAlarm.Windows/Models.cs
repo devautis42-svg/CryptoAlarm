@@ -23,6 +23,7 @@ public sealed class AppSettings
     public bool StartMonitoringOnLaunch { get; set; } = false;
     public bool MinimizeToTray { get; set; } = true;
     public string AlarmWavFile { get; set; } = "";
+    public int AlarmSoundSeconds { get; set; } = 60;
     public MarketKind LastMarket { get; set; } = MarketKind.Spot;
 }
 
